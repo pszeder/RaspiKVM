@@ -150,11 +150,6 @@ Examples:
 - A Keymap for the **UK** and **International English** versions is [here](https://raw.githubusercontent.com/samartzidis/RaspiKey/master/keymaps/en-uk-keymap.json). This keymap swaps the <kbd>`</kbd> key with the key below <kbd>Esc</kbd>.
 
 
----
-RaspiKey is a free and open-source software effort. If you like it and find it useful, please consider donating
 
-[![donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=TBM5P9X6GZRCL)
-<br/>
-**Bitcoin:** bc1qecklcec0z2hzv7twf97p2tr44syw5z5aqmamrt
 
 
