@@ -117,6 +117,10 @@ public:
     }
     void Status(){bool keyboard=false,mouse=false;for(auto& node:nodes)if(node->notify&&node->boot==(protocol==0)){keyboard|=node->report==1;mouse|=node->report==2;}KvmBluetoothStatus(application,connected&&paired&&keyboard&&mouse&&!suspended,"");}
     void Observe(GVariant* options){const gchar* device=nullptr;if(g_variant_lookup(options,"device","&o",&device)){auto address=HostAddress(device);if(address.empty()||!KvmAcceptHost(address))throw std::runtime_error("This Bluetooth output host is not authorized. Open pairing in the web UI.");RefreshPeer();}}
+    bool TrustedInput(const std::string& path,const std::string& uuid){
+        if(uuid!="00001124-0000-1000-8000-00805f9b34fb"&&uuid!="00001812-0000-1000-8000-00805f9b34fb")return false;
+        try{auto reply=Call(path.c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(reply,"(@a{sv})",&properties);gboolean trusted=false,bonded=false;const gchar* icon="";g_variant_lookup(properties,"Trusted","b",&trusted);g_variant_lookup(properties,"Paired","b",&bonded);g_variant_lookup(properties,"Icon","&s",&icon);bool allowed=trusted&&bonded&&(!strcmp(icon,"input-keyboard")||!strcmp(icon,"input-mouse"));g_variant_unref(properties);g_variant_unref(reply);return allowed;}catch(const std::exception&){return false;}
+    }
     void Dispatch(const std::string& path,const std::string& interface,const std::string& method,GVariant* args,GDBusMethodInvocation* invocation){
         if(interface=="org.freedesktop.DBus.ObjectManager"){
             GVariantBuilder objects;g_variant_builder_init(&objects,G_VARIANT_TYPE("a{oa{sa{sv}}}"));
@@ -126,7 +130,11 @@ public:
         if(interface=="org.bluez.Agent1"){
             if(method=="RequestPinCode"||method=="RequestPasskey"){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.Rejected","Bluetooth output uses LE pairing.");return;}
             if(method=="RequestAuthorization"||method=="RequestConfirmation"||method=="AuthorizeService"){
-                auto first=g_variant_get_child_value(args,0);auto address=HostAddress(g_variant_get_string(first,nullptr));g_variant_unref(first);
+                auto first=g_variant_get_child_value(args,0);std::string device=g_variant_get_string(first,nullptr);auto address=HostAddress(device);g_variant_unref(first);
+                // Incoming Classic HID reconnections of the trusted source
+                // keyboard still use BlueZ's default agent. The Mac-output
+                // pairing gate must not reject those existing input bonds.
+                if(method=="AuthorizeService"){auto service=g_variant_get_child_value(args,1);std::string uuid=g_variant_get_string(service,nullptr);g_variant_unref(service);if(TrustedInput(device,uuid)){g_dbus_method_invocation_return_value(invocation,nullptr);return;}}
                 if(address.empty()||!KvmAcceptHost(address)){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.Rejected","Open the RaspiKey host pairing window first.");return;}
             }
             g_dbus_method_invocation_return_value(invocation,nullptr);return;
