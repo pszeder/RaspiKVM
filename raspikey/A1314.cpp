@@ -40,7 +40,7 @@ size_t A1314::ProcessInputReport(uint8_t* buf, size_t len)
 		// last valid physical keys, rather than replaying an ambiguous report.
 		if(!KeyboardKeysValid(buf + 3, 6))
 			return 0;
-		memcpy(&m_a1644rep, buf, sizeof(A1314HidReport));		
+		memcpy(&m_a1644rep, buf, sizeof(A1314HidReport));
 	}
 	else
 		return 0;
