@@ -1,5 +1,6 @@
 #include "KeyboardPerformance.h"
 #include "MouseTiming.h"
+#include "KeyboardReportSafety.h"
 #include <linux/input.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
@@ -21,6 +22,7 @@ struct KeyboardPerformance::Impl {
     uint64_t published=0,overruns=0;
     MouseTiming bridge,evdev;
     explicit Impl(int fd) {
+        KeyboardErrorReports().store(0, std::memory_order_relaxed);
         pthread_setname_np(pthread_self(),"raspikey-kbd");
         baseline=access("/var/cache/raspikey-build/build/keyboard-baseline",F_OK)==0;
         errno=0;originalNice=getpriority(PRIO_PROCESS,syscall(SYS_gettid));
@@ -62,7 +64,8 @@ struct KeyboardPerformance::Impl {
             <<",\"maxReadToQueueUs\":"<<bridge.maxQueue<<",\"queueOverflowReports\":"<<bridge.queueHistogram.back()
             <<",\"evdevFrames\":"<<evdev.frames<<",\"meanEvdevDelayUs\":"<<(evdev.frames?evdev.queueSum/evdev.frames:0)
             <<",\"evdevDelayP95UpperUs\":"<<MouseTiming::Percentile(evdev.queueHistogram,evdev.frames,95,100)
-            <<",\"maxEvdevDelayUs\":"<<evdev.maxQueue<<",\"evdevOverruns\":"<<overruns<<"}\n";
+            <<",\"maxEvdevDelayUs\":"<<evdev.maxQueue<<",\"evdevOverruns\":"<<overruns
+            <<",\"suppressedErrorReports\":"<<KeyboardErrorReports().load(std::memory_order_relaxed)<<"}\n";
         int fd=open("/run/raspikey-keyboard-performance.json.next",O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW,0644);
         if(fd<0)return;
         std::string data=text.str();bool ok=write(fd,data.data(),data.size())==ssize_t(data.size());
