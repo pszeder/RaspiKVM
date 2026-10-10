@@ -1,9 +1,21 @@
 """Check the actual configfs HID descriptor against the bridge report layouts."""
-import pathlib,re
+import pathlib,re,sys,tempfile,os
+from unittest import mock
 
 script=(pathlib.Path(__file__).resolve().parents[2]/'scripts/development/usb-gadget.sh').read_text()
-encoded=re.search(r"printf '%b' '(.*?)' > functions/hid.usb1/report_desc",script).group(1)
+encoded=re.search(r"write_descriptor '(.*?)' functions/hid.usb1/report_desc",script).group(1)
 descriptor=bytes.fromhex(encoded.replace('\\x',''))
+# Exercise the script's actual writer. configfs replaces content on every
+# write, so the entire binary descriptor must be submitted in one call.
+writer=re.search(r"python3 - .*? <<'PY'\n(.*?)\nPY",script,re.S).group(1)
+with tempfile.TemporaryDirectory() as directory:
+    target=pathlib.Path(directory)/'report_desc'
+    target.touch()
+    with mock.patch.object(sys,'argv',['writer',str(target),encoded]),mock.patch('os.write',wraps=os.write) as write:
+        exec(compile(writer,'usb-gadget-descriptor-writer','exec'),{})
+        assert write.call_count==1
+        assert write.call_args.args[1]==descriptor
+    assert target.read_bytes()==descriptor
 size=count=report_id=0
 input_bits={}
 index=0
@@ -26,4 +38,4 @@ assert input_bits=={1:64,2:64,3:16},input_bits
 assert all((bits+7)//8+1<=9 for bits in input_bits.values())
 assert 'echo 1 > functions/hid.usb1/interval' in script
 assert 'echo 1 > functions/hid.usb1/no_out_endpoint' in script
-print('Actual USB HID descriptor: mouse 9 bytes, keyboard 9 bytes, consumer 3 bytes; bInterval=1, IN-only')
+print(f'USB descriptor: {len(descriptor)} bytes in one write; mouse 9 bytes, keyboard 9 bytes, consumer 3 bytes; bInterval=1, IN-only')
