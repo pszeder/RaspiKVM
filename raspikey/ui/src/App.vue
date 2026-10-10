@@ -20,7 +20,7 @@
         <md-switch v-model="discovery" :disabled="busy" @change="changeDiscovery()"><md-icon>bluetooth_searching</md-icon> Bluetooth Discovery Mode</md-switch>
 
         <div class="md-title"> Device State</div>     
-        <div class="md-caption">Save or factory reset the current RaspiKey system state. <br/>You will need to save state when you pair a new keyboard and you'd want to keep it paired them after RaspiKey restarts.</div>         
+        <div class="md-caption">Save or factory reset the current RaspiKey system state. Pairings and settings are stored on the development Pi.</div>
         <md-button class="md-raised md-primary" v-on:click="saveState()" :disabled="!connected"><md-icon>save</md-icon> Save</md-button>
         <md-button class="md-raised md-accent" v-on:click="resetState()" :disabled="!connected"><md-icon>delete</md-icon> Reset</md-button>
 
@@ -39,8 +39,8 @@
 
     <md-content class="md-elevation-1">
       
-      <div class="md-headline"><md-icon>keyboard</md-icon> Keyboards</div>      
-      <div class="md-caption">View and manage discovered Bluetooth keyboards.</div>
+      <div class="md-headline"><md-icon>devices</md-icon> Keyboards and mice</div>
+      <div class="md-caption">Pair a Bluetooth keyboard or mouse. The MX Master 3S thumb button opens Windows Task View.</div>
 
       <div class="device-cards" v-if="connected">
         <DeviceCard v-for="device in devices" :key="device.address" :deviceData="device" 
@@ -163,7 +163,7 @@
           this.discovery = (res.v === "on");
 
           res = await ApiService.getDevices();          
-          this.devices = res.filter(t => t.icon === "input-keyboard");
+          this.devices = res.filter(t => t.icon === "input-keyboard" || t.icon === "input-mouse");
 
           this.connected = true;
         }

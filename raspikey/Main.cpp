@@ -34,6 +34,9 @@
 #include "GenericReportFilter.h"
 #include "Main.h"
 #include "KeyMapReportFilter.h"
+#ifdef RASPIKEY_MODERN_RUNTIME
+#include "MouseBridge.h"
+#endif
 
 using namespace std;
 
@@ -88,7 +91,14 @@ int main(int argc, char** argv)
 		return -1;
 	}
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+	MouseBridge mouse;
+	mouse.Start();
+#endif
 	OpenDevicesLoop();
+#ifdef RASPIKEY_MODERN_RUNTIME
+	mouse.Stop();
+#endif
 	StopAllServices();
 
 	return 0;
@@ -538,7 +548,6 @@ void SetSettings(const std::string& devId, const std::string& json)
 // Dummy methods to avoid static linking issues with libsystemd.a
 extern "C" int sd_listen_fds(int unset_environment) { return 0;  }
 extern "C" int sd_is_socket(int fd, int family, int type, int listening) { return 0; }
-
 
 
 

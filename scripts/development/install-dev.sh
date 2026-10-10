@@ -119,14 +119,21 @@ if [[ ! -d "$candidate" ]]; then
 fi
 install_framework() {
     mkdir -p /usr/local/libexec/raspikey
+    if ! cmp -s "$tools/usb-gadget.sh" /usr/local/libexec/raspikey/usb-gadget.sh ||
+       ! cmp -s "$tools/raspikey-dev-usb.service" /etc/systemd/system/raspikey-dev-usb.service; then
+        touch /etc/raspikey-dev-usb-reboot-required
+        echo 'USB descriptor update staged. Reboot the development Pi after setup.'
+    fi
     for name in assert-dev.sh enable-bluetooth.sh release-keys.py rollback-dev.sh install-dev.sh \
-                apply-runtime.sh unpack-upload.py deploy-control.sh configure-deploy.sh; do
+                apply-runtime.sh unpack-upload.py deploy-control.sh configure-deploy.sh usb-gadget.sh; do
         install -m 755 "$tools/$name" "/usr/local/libexec/raspikey/.$name.next"
         mv -Tf "/usr/local/libexec/raspikey/.$name.next" "/usr/local/libexec/raspikey/$name"
     done
     install -m 644 "$tools/raspikey-dev.service" /usr/local/libexec/raspikey/raspikey-dev.service
+    install -m 644 "$tools/raspikey-dev-usb.service" /etc/systemd/system/raspikey-dev-usb.service
     install -m 644 "$bundle/manifest.json" /usr/local/libexec/raspikey/framework-manifest.json
     bash /usr/local/libexec/raspikey/configure-deploy.sh
+    systemctl daemon-reload
 }
 if $bootstrap; then
     [[ -f /etc/raspikey-dev-id ]] || cat /proc/sys/kernel/random/uuid > /etc/raspikey-dev-id

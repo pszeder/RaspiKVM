@@ -11,7 +11,8 @@
     </md-card-header>
 
     <md-card-media style="padding:15px">
-      <img v-if="detectKeyboardModel(deviceData.modalias)==='A1314'" src="../assets/A1314.png">
+      <div v-if="deviceData.icon === 'input-mouse'" style="text-align: center; padding: 32px"><md-icon style="font-size: 64px; width: 64px; height: 64px">mouse</md-icon><div>Bluetooth mouse</div></div>
+      <img v-else-if="detectKeyboardModel(deviceData.modalias)==='A1314'" src="../assets/A1314.png">
       <img v-else-if="detectKeyboardModel(deviceData.modalias)==='A1644'" src="../assets/A1644.png">
       <img v-else src="../assets/keyboard.png">
     </md-card-media>
@@ -51,7 +52,7 @@
       <md-button class="md-accent" v-on:click="removeDevice()" :disabled="disabled"><md-icon>delete</md-icon> Remove</md-button>
       <md-button class="md-icon-button" v-on:click="deviceDetails()" :disabled="disabled"><md-icon>info</md-icon><md-tooltip md-delay="300">Info</md-tooltip></md-button>
 
-      <md-menu>
+      <md-menu v-if="deviceData.icon !== 'input-mouse'">
         <md-button md-menu-trigger class="md-icon-button" :disabled="disabled||!deviceData.connected">
           <md-icon v-if="!deviceData.hasKeymap">map</md-icon>
           <md-icon v-if="deviceData.hasKeymap" style="color: #14d100">map</md-icon>
@@ -122,7 +123,7 @@ export default {
       this.setSettingsParent(this.deviceData);
     },
     detectKeyboardModel: function(modalias) {
-      modalias = modalias.toLowerCase();
+      modalias = (modalias || '').toLowerCase();
       if(modalias.indexOf("v004cp0267") !== -1 || modalias.indexOf("v05acp0267") !== -1)
         return "A1644";
       else if(modalias.indexOf("v05ac") !== -1)

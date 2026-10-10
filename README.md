@@ -2,6 +2,8 @@
 
 For a fresh Pi Zero W on current 32-bit Raspberry Pi OS, see [the development setup guide](docs/development.html). From PowerShell in this checkout, run `./dev.ps1 doctor` to check the configured spare, `./dev.ps1 update` to build and deploy changes, and `./dev.ps1 rollback` to restore the previous release. Routine deployment uses SSH-key authentication and the scoped deployment helper. Local credentials and target settings live in the ignored `.dev` directory. The historical installer documented below targets the old read-only Buster image.
 
+The MX Master 3S baseline adds Bluetooth mouse forwarding to USB alongside the keyboard. See [mouse pairing, responsiveness tests and checkpoint recovery](docs/mouse.html).
+
 ![raspikey-logo](images/raspikey-logo.png)
 ###### Universal Apple Keyboard USB Adapter
 

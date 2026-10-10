@@ -11,6 +11,9 @@
 #include "Globals.h"
 #include "Logger.h"
 #include "Main.h"
+#ifdef RASPIKEY_MODERN_RUNTIME
+#include "MouseBridge.h"
+#endif
 
 
 using namespace std;
@@ -203,6 +206,19 @@ void HttpApiServer::BuildRoutes()
 		return crow::response(200);
 	});
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+	CROW_ROUTE(m_crowApp, "/mouse/status") ([]()
+	{
+		auto status = GetMouseBridgeStatus();
+		nlohmann::json result = {{"usbReady", status.usbReady}, {"forwarding", status.connected},
+			{"address", status.address}, {"name", status.name}, {"reports", status.reports},
+			{"lastForwardUs", status.lastForwardUs}, {"maxForwardUs", status.maxForwardUs},
+			{"droppedFrames", status.droppedFrames}};
+		auto response = crow::response(result.dump());
+		response.set_header("Content-Type", "application/json");
+		return response;
+	});
+#endif
 	CROW_ROUTE(m_crowApp, "/bt/devices") ([]()
 	{
 		auto jarray = nlohmann::json::array();
@@ -220,7 +236,7 @@ void HttpApiServer::BuildRoutes()
 			jobj["connected"] = dev.Connected;
 			jobj["trusted"] = dev.Trusted;
 
-			if (dev.Connected)
+			if (dev.Connected && dev.Icon != "input-mouse")
 			{
 				int bcap = 0;
 				if (Globals::GetBtHidBatteryCapacity(dev.Address, bcap))
@@ -243,7 +259,9 @@ void HttpApiServer::BuildRoutes()
 			jarray.push_back(jobj);
 		}
 
-		return jarray.dump();
+		auto response = crow::response(jarray.dump());
+		response.set_header("Content-Type", "application/json");
+		return response;
 	});
 
 	//CROW_ROUTE(m_app, "/bt/power")
@@ -492,8 +510,5 @@ void HttpApiServer::BuildRoutes()
 		}
 	});
 }
-
-
-
 
 

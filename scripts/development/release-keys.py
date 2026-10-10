@@ -14,3 +14,16 @@ try:
         os.close(fd)
 except OSError:
     pass
+try:
+    fd = os.open("/dev/hidg1", os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        for report in (bytes([1]) + bytes(8), bytes([2]) + bytes(8), bytes([3, 0, 0])):
+            if select.select([], [fd], [], 0.2)[1]:
+                try:
+                    os.write(fd, report)
+                except OSError:
+                    pass
+    finally:
+        os.close(fd)
+except OSError:
+    pass
