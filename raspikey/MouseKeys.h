@@ -10,7 +10,17 @@
 class MouseKeys {
     std::array<bool,KEY_MAX+1> held{};
     bool keyboardChanged=false,consumerChanged=false;
+    struct ShortcutState {uint8_t modifiers=0,key=0;bool held=false;};
+    std::array<ShortcutState,5> shortcuts{};
 public:
+    void Shortcut(unsigned source,uint8_t modifiers,uint8_t key,bool pressed) {
+        if(source>=shortcuts.size())return;
+        auto& saved=shortcuts[source];
+        if(saved.held==pressed)return;
+        // Keep the press-time chord until release, even across settings changes.
+        saved={modifiers,key,pressed};keyboardChanged=true;
+    }
+    void ReleaseShortcuts(){for(unsigned i=0;i<shortcuts.size();++i)Shortcut(i,0,0,false);}
     void TaskSwitch(bool pressed) {
         Event(KEY_LEFTMETA,pressed);Event(KEY_TAB,pressed);
     }
@@ -60,14 +70,21 @@ public:
         if(!keyboardChanged) return false;
         keyboardChanged=false;report={};report[0]=2;
         size_t slot=3;
+        auto add=[&](uint8_t usage) {
+            if(!usage)return;
+            if(std::find(report.begin()+3,report.begin()+slot,usage)!=report.begin()+slot)return;
+            if(slot==report.size()){std::fill(report.begin()+3,report.end(),1);return;}
+            report[slot++]=usage;
+        };
         for(unsigned key=0;key<=KEY_MAX;++key) if(held[key]) {
             unsigned usage=Usage(key);
             if(usage>=224&&usage<=231) report[1]|=1u<<(usage-224);
             else if(usage) {
                 if(slot==report.size()) {std::fill(report.begin()+3,report.end(),1);break;}
-                report[slot++]=uint8_t(usage);
+                add(uint8_t(usage));
             }
         }
+        for(const auto& saved:shortcuts)if(saved.held){report[1]|=saved.modifiers;add(saved.key);}
         return true;
     }
     bool ConsumerReport(std::array<uint8_t,3>& report) {

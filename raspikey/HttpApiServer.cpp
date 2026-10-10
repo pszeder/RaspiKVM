@@ -13,6 +13,7 @@
 #include "Main.h"
 #ifdef RASPIKEY_MODERN_RUNTIME
 #include "MouseBridge.h"
+#include "MouseControl.h"
 #endif
 
 
@@ -207,6 +208,23 @@ void HttpApiServer::BuildRoutes()
 	});
 
 #ifdef RASPIKEY_MODERN_RUNTIME
+	CROW_ROUTE(m_crowApp, "/mouse/settings").methods("GET"_method,"POST"_method) ([](const crow::request& req)
+	{
+		const char* address=req.url_params.get("v");
+		if(!address)return crow::response(400,"Choose a mouse.");
+		try {
+			bool supported=false;
+			for(const auto& device:bluetooth::GetDevices()) {
+				auto alias=device.Modalias;transform(alias.begin(),alias.end(),alias.begin(),::tolower);
+				if(strcasecmp(device.Address.c_str(),address)==0&&device.Paired&&alias.find("v046dpb034")!=string::npos)supported=true;
+			}
+			if(!supported)return crow::response(404,"Pair an MX Master 3S to customize its buttons.");
+			auto body=req.method=="POST"_method?SetMouseControlSettings(address,req.body):GetMouseControlSettings(address);
+			auto response=crow::response(body);response.set_header("Content-Type","application/json");response.set_header("Cache-Control","no-store");return response;
+		}catch(const std::invalid_argument& error){return crow::response(400,error.what());}
+		catch(const nlohmann::json::exception& error){return crow::response(400,"Choose valid scroll and button settings.");}
+		catch(const std::exception& error){return crow::response(500,error.what());}
+	});
 	CROW_ROUTE(m_crowApp, "/mouse/status") ([]()
 	{
 		auto status = GetMouseBridgeStatus();
@@ -510,5 +528,3 @@ void HttpApiServer::BuildRoutes()
 		}
 	});
 }
-
-

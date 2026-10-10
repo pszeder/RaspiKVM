@@ -12,6 +12,7 @@ MouseBridgeStatus GetMouseBridgeStatus();
 class MouseBridge {
     std::atomic<bool> stopping{false};
     std::thread worker;
+    std::thread controlWorker;
     void Run();
 public:
     void Start();

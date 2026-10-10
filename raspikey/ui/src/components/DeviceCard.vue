@@ -43,7 +43,7 @@
         </div>
 
       </div>
-
+      <MouseSettings v-if="isMxMaster3s" :address="deviceData.address" :disabled="disabled" />
 
     </md-card-content>
 
@@ -74,9 +74,14 @@
 
 <script>
 import Util from '../util'
+import MouseSettings from './MouseSettings'
 
 export default {
   name: "DeviceCard",
+  components: { MouseSettings },
+  computed: {
+    isMxMaster3s () { return (this.deviceData.modalias || '').toLowerCase().includes('v046dpb034') && this.deviceData.paired }
+  },
   props: {
     pairDeviceParent: null,
     removeDeviceParent: null,
@@ -144,6 +149,7 @@ export default {
 <style>
 .md-card {
   width: 360px;
+  max-width: calc(100vw - 40px);
   margin: 4px;
   display: inline-block;
   vertical-align: top;

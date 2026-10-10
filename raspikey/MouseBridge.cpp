@@ -2,6 +2,8 @@
 #include "MouseReports.h"
 #include "MouseKeys.h"
 #include "MousePerformance.h"
+#include "MouseControl.h"
+#include "MouseKeyboardMerge.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -17,7 +19,18 @@ std::mutex stateMutex;
 MouseBridgeStatus state;
 constexpr size_t KeyWords=(KEY_MAX+8*sizeof(long))/(8*sizeof(long));
 bool Bit(const unsigned long* bits,unsigned bit) {return (bits[bit/(8*sizeof(long))]>>(bit%(8*sizeof(long))))&1;}
-struct Device {int fd=-1; bool dropped=false; bool mxMaster3s=false; bool monotonic=false; bool motion=false; MouseReports mouse;MouseKeys keys;};
+struct Device {int fd=-1; bool dropped=false; bool mxMaster3s=false; bool monotonic=false; bool motion=false; MouseReports mouse;MouseKeys keys;std::array<bool,4> customHeld{};std::array<uint8_t,9> keyboard{{2}};};
+int Button(unsigned code) {switch(code){case BTN_FORWARD:return 0;case BTN_MIDDLE:return 1;case BTN_SIDE:return 2;case BTN_EXTRA:return 3;default:return -1;}}
+void ButtonsResync(Device& device,const unsigned long* held,const std::string& address) {
+    unsigned long filtered[KeyWords];std::copy(held,held+KeyWords,filtered);
+    device.keys.ReleaseShortcuts();device.customHeld.fill(false);
+    if(device.mxMaster3s)for(unsigned code: {BTN_FORWARD,BTN_MIDDLE,BTN_SIDE,BTN_EXTRA}) {
+        unsigned button=unsigned(Button(code));auto action=GetMouseButtonAction(address,button);
+        if(action.action){filtered[code/(8*sizeof(long))]&=~(1UL<<(code%(8*sizeof(long))));device.customHeld[button]=Bit(held,code);if(action.action==1)device.keys.Shortcut(button,action.modifiers,action.key,Bit(held,code));}
+    }
+    device.mouse.Resync(filtered);device.keys.Resync(held);
+    if(device.mxMaster3s)device.keys.TaskSwitch(!GetMouseButtonAction(address,0).action&&Bit(held,BTN_FORWARD));
+}
 uint64_t NowUs(){timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);return uint64_t(t.tv_sec)*1000000+t.tv_nsec/1000;}
 bool Write(int fd,const uint8_t* report,size_t size,const std::atomic<bool>& stopping) {
     while(!stopping) {
@@ -60,16 +73,15 @@ std::vector<Device> Discover(std::string& address,std::string& name) {
         if(id.bustype!=BUS_BLUETOOTH||address!=unique||ioctl(fd,EVIOCGRAB,1)<0){close(fd);continue;}
         Device device;device.fd=fd;device.mxMaster3s=id.vendor==0x046d&&id.product==0xb034;
         int clock=CLOCK_MONOTONIC;device.monotonic=ioctl(fd,EVIOCSCLOCKID,&clock)==0;
-        unsigned long held[KeyWords]={};ioctl(fd,EVIOCGKEY(sizeof(held)),held);device.mouse.Resync(held);device.keys.Resync(held);
-        if(device.mxMaster3s)device.keys.TaskSwitch(Bit(held,BTN_FORWARD));
+        unsigned long held[KeyWords]={};ioctl(fd,EVIOCGKEY(sizeof(held)),held);ButtonsResync(device,held,address);
         devices.push_back(device);
     }
     globfree(&paths);return devices;
 }
 }
 MouseBridgeStatus GetMouseBridgeStatus() {std::lock_guard<std::mutex> lock(stateMutex);return state;}
-void MouseBridge::Start(){worker=std::thread(&MouseBridge::Run,this);}
-void MouseBridge::Stop(){stopping=true;if(worker.joinable())worker.join();}
+void MouseBridge::Start(){controlWorker=std::thread(RunMouseControl,&stopping);worker=std::thread(&MouseBridge::Run,this);}
+void MouseBridge::Stop(){stopping=true;if(worker.joinable())worker.join();if(controlWorker.joinable())controlWorker.join();}
 void MouseBridge::Run() {
     MousePerformance performance;
     while(!stopping) {
@@ -82,11 +94,30 @@ void MouseBridge::Run() {
         {std::lock_guard<std::mutex> lock(stateMutex);state.connected=true;state.address=address;state.name=name;}
         performance.Connect(address,std::any_of(devices.begin(),devices.end(),[](const Device& d){return d.mxMaster3s;}));
         bool healthy=true;
+        MouseKeys divertedKeys;std::array<uint8_t,9> divertedReport{{2}};
+        auto keyboardWrite=[&]() {
+            std::vector<std::array<uint8_t,9>> reports;reports.reserve(devices.size()+1);reports.push_back(divertedReport);
+            for(const auto& device:devices)reports.push_back(device.keyboard);
+            auto report=MergeMouseKeyboard(reports);return Write(output,report.data(),report.size(),stopping);
+        };
         std::vector<pollfd> waiting;waiting.reserve(devices.size());
         for(const auto& device:devices)waiting.push_back({device.fd,POLLIN,0});
+        const int controlWake=MouseControlEventFd();
+        if(controlWake>=0)waiting.push_back({controlWake,POLLIN,0});
         while(!stopping&&healthy) {
             int ready=poll(waiting.data(),waiting.size(),50);
             if(ready<0&&errno!=EINTR)break;
+            if(controlWake>=0&&(waiting.back().revents&POLLIN)) {
+                uint64_t wake;while(read(controlWake,&wake,sizeof(wake))>0){}
+                MouseShortcutEvent event;
+                while(TakeMouseShortcutEvent(event)&&healthy) {
+                    if(event.source==255)divertedKeys.ReleaseShortcuts();
+                    else divertedKeys.Shortcut(event.source,event.modifiers,event.key,event.pressed);
+                    // Write every edge separately: a fast press/release must not
+                    // collapse into an all-released report in the same poll.
+                    if(divertedKeys.Keyboard(divertedReport))healthy=keyboardWrite();
+                }
+            }
             for(size_t i=0;i<devices.size()&&healthy;++i) {
                 if(waiting[i].revents&(POLLERR|POLLHUP|POLLNVAL)){healthy=false;break;}
                 if(!(waiting[i].revents&POLLIN))continue;
@@ -99,15 +130,22 @@ void MouseBridge::Run() {
                     if(device.dropped) {
                         if(event.type!=EV_SYN||event.code!=SYN_REPORT)continue;
                         unsigned long held[KeyWords]={};if(ioctl(device.fd,EVIOCGKEY(sizeof(held)),held)<0){healthy=false;break;}
-                        device.mouse.Resync(held);device.keys.Resync(held);
-                        if(device.mxMaster3s)device.keys.TaskSwitch(Bit(held,BTN_FORWARD));
+                        ButtonsResync(device,held,address);
                         device.dropped=false;
                     } else {
                         if(event.type==EV_REL&&(event.code==REL_X||event.code==REL_Y)&&event.value)device.motion=true;
-                        device.mouse.Event(event.type,event.code,event.value);
+                        bool consume=false;int button=event.type==EV_KEY?Button(event.code):-1;
+                        if(device.mxMaster3s&&button>=0&&event.value==2)consume=device.customHeld[size_t(button)];
+                        if(device.mxMaster3s&&button>=0&&event.value!=2) {
+                            auto action=GetMouseButtonAction(address,unsigned(button));
+                            if(event.value)device.customHeld[size_t(button)]=action.action!=0;
+                            consume=device.customHeld[size_t(button)];
+                            if(consume){device.keys.Shortcut(unsigned(button),action.modifiers,action.key,event.value&&action.action==1);if(!event.value)device.customHeld[size_t(button)]=false;}
+                        }
+                        if(!consume)device.mouse.Event(event.type,event.code,event.value);
                         if(event.type==EV_KEY) {
                             device.keys.Event(event.code,event.value);
-                            if(device.mxMaster3s&&event.code==BTN_FORWARD&&event.value!=2)device.keys.TaskSwitch(event.value!=0);
+                            if(!consume&&device.mxMaster3s&&event.code==BTN_FORWARD&&event.value!=2)device.keys.TaskSwitch(event.value!=0);
                         }
                     }
                     if(event.type!=EV_SYN||event.code!=SYN_REPORT)continue;
@@ -115,7 +153,7 @@ void MouseBridge::Run() {
                     std::array<uint8_t,9> mouse;std::array<uint8_t,9> keyboard;std::array<uint8_t,3> consumer;
                     uint64_t count=0;
                     while(device.mouse.Next(mouse)&&healthy){healthy=Write(output,mouse.data(),mouse.size(),stopping);++count;}
-                    if(device.keys.Keyboard(keyboard)&&healthy){healthy=Write(output,keyboard.data(),keyboard.size(),stopping);++count;}
+                    if(device.keys.Keyboard(keyboard)&&healthy){device.keyboard=keyboard;healthy=keyboardWrite();++count;}
                     if(device.keys.ConsumerReport(consumer)&&healthy){healthy=Write(output,consumer.data(),consumer.size(),stopping);++count;}
                     if(count&&healthy) {
                         uint64_t now=NowUs(),stamp=uint64_t(event.input_event_sec)*1000000+event.input_event_usec;
