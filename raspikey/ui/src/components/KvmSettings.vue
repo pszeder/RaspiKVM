@@ -10,6 +10,8 @@
         <button type="button" :disabled="busy || !status.ready || status.activeHost === 'bluetooth'" @click="command('switch', { host: 'bluetooth' })">Use Bluetooth computer</button>
       </div>
       <label class="enable"><input type="checkbox" v-model="settings.enabled" :disabled="busy" @change="changed"> Enable Bluetooth output</label>
+      <label class="enable"><input type="checkbox" v-model="settings.reverseBluetoothScroll" :disabled="busy" @change="changed"> Reverse scrolling on Bluetooth computer</label>
+      <p class="help">Reverses both wheels only when Bluetooth receives input. Enable this to match Windows scrolling when the Mac uses Natural scrolling.</p>
       <fieldset :disabled="busy">
         <legend>Switch shortcut</legend>
         <div class="modifiers">

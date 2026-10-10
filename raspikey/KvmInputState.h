@@ -10,6 +10,16 @@ inline size_t KvmWireSize(bool mouse,const uint8_t* report,size_t size){
     return !mouse&&report&&size>=9&&report[0]==1?9:size;
 }
 
+inline std::array<uint8_t,8> KvmMousePayload(const uint8_t* payload,bool reverseScroll){
+    std::array<uint8_t,8> result{};
+    std::copy_n(payload,8,result.begin());
+    if(reverseScroll)for(size_t i:{size_t(6),size_t(7)}){
+        int wheel=int8_t(result[i]);
+        result[i]=uint8_t(wheel==-128?127:-wheel);
+    }
+    return result;
+}
+
 // Physical state survives a switch, but is quarantined until every held input
 // has been released. Never replay a switch chord or a held drag on the new host.
 struct KvmInputState {
