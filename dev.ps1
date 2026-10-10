@@ -59,7 +59,8 @@ def run(args): return subprocess.check_output(args,text=True).strip()
 devices=json.load(urllib.request.urlopen('http://localhost/bt/devices',timeout=5))
 checks={'hostname':run(['hostname']),'model':pathlib.Path('/proc/device-tree/model').read_text().strip('\0'),
 'architecture':run(['dpkg','--print-architecture']),'bluetoothPowered': 'Powered: yes' in run(['bluetoothctl','show']),
-'pairedKeyboardCount':sum(d.get('paired',False) and d.get('connected',False) for d in devices),
+'pairedKeyboardCount':sum(d.get('icon')=='input-keyboard' and d.get('paired',False) and d.get('connected',False) for d in devices),
+'pairedMouseCount':sum(d.get('icon')=='input-mouse' and d.get('paired',False) and d.get('connected',False) for d in devices),
 'usbInternet':urllib.request.urlopen('https://deb.debian.org/',timeout=15).status==200}
 checks['deploymentFramework']=json.loads(pathlib.Path('/etc/raspikey-dev-deploy.json').read_text()).get('frameworkRelease','setup-1')
 print(json.dumps(checks,indent=2))
