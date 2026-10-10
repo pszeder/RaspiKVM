@@ -112,12 +112,18 @@ public:
         }return g_variant_builder_end(&result);
     }
     void Changed(Node& node,const char* property,GVariant* value){GVariantBuilder changes;g_variant_builder_init(&changes,G_VARIANT_TYPE("a{sv}"));g_variant_builder_add(&changes,"{sv}",property,value);g_dbus_connection_emit_signal(bus,nullptr,node.path.c_str(),Properties,"PropertiesChanged",g_variant_new("(s@a{sv}@as)",node.interface.c_str(),g_variant_builder_end(&changes),g_variant_new_strv(nullptr,0)),nullptr);}
-    void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;connected=false;return;}observedHost=address;
+    void LinkClosed(){
+        connected=false;bondRequested=false;suspended=false;protocol=1;
+        for(auto& node:nodes)if(node->uuid=="2a4c"||node->uuid=="2a4e")node->value={1};
+    }
+    void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;LinkClosed();return;}observedHost=address;
         try{auto response=Call(HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);g_variant_unref(response);
         }catch(const std::exception&){connected=false;paired=false;KvmHostSeen(address,"",false,false);}
         // BlueZ retains bonded peers' CCC configuration across disconnects.
         // Notification state belongs to StartNotify/StopNotify, not this link.
-        if(!connected)bondRequested=false;
+        // Suspend and protocol mode describe this connection, not the bond.
+        // macOS can suspend before disconnecting without resuming on reconnect.
+        if(!connected)LinkClosed();
         if(connected&&!paired&&!bondRequested&&KvmPairingOpen()){
             // macOS can wait for the HID peripheral to request encryption.
             // Explicitly initiate bonding using this connection's own agent.
@@ -166,7 +172,7 @@ public:
             GVariant* bytes;GVariant* options;g_variant_get(args,"(@ay@a{sv})",&bytes,&options);
             try{Observe(options);}catch(...){g_variant_unref(bytes);g_variant_unref(options);throw;}g_variant_unref(options);gsize count=0;const auto* value=static_cast<const uint8_t*>(g_variant_get_fixed_array(bytes,&count,1));
             if(count!=1||(node->uuid=="2a4e"&&value[0]>1)||(node->uuid=="2a4c"&&value[0]>1)){g_variant_unref(bytes);g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.InvalidValueLength","Expected one valid byte.");return;}
-            node->value.assign(value,value+count);if(node->uuid=="2a4e")protocol=value[0];if(node->uuid=="2a4c")suspended=value[0]==0;if(node->uuid=="2a32"||node->path==std::string(Root)+"/hid/led")KvmHostLed(true,value[0]);g_variant_unref(bytes);Status();g_dbus_method_invocation_return_value(invocation,nullptr);return;
+            node->value.assign(value,value+count);if(node->uuid=="2a4e")protocol=value[0];if(node->uuid=="2a4c")suspended=value[0]==0;if(node->uuid=="2a4e"||node->uuid=="2a4c")fprintf(stderr,"KVM: %s mode %u\n",node->uuid.c_str(),unsigned(value[0]));if(node->uuid=="2a32"||node->path==std::string(Root)+"/hid/led")KvmHostLed(true,value[0]);g_variant_unref(bytes);Status();g_dbus_method_invocation_return_value(invocation,nullptr);return;
         }
         if(method=="StartNotify"||method=="StopNotify"){
             if(std::find(node->flags.begin(),node->flags.end(),"notify")==node->flags.end()){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.NotSupported","Not a notification report.");return;}
@@ -210,7 +216,7 @@ public:
         }catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}
     }
     void Drain(){uint64_t count;while(read(wake,&count,sizeof(count))>0){}std::deque<Report> reports;std::string forgotten;{std::lock_guard<std::mutex> lock(queueMutex);reports.swap(queue);forgotten.swap(forgetHost);}
-        if(!forgotten.empty()){for(auto& node:nodes)node->notify=false;connected=false;paired=false;bondRequested=false;observedHost.clear();try{Command(Adapter,"org.bluez.Adapter1","RemoveDevice",g_variant_new("(o)",HostPath(forgotten).c_str()));}catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}reports.clear();}
+        if(!forgotten.empty()){for(auto& node:nodes)node->notify=false;LinkClosed();paired=false;observedHost.clear();try{Command(Adapter,"org.bluez.Adapter1","RemoveDevice",g_variant_new("(o)",HostPath(forgotten).c_str()));}catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}reports.clear();}
         for(auto& report:reports)for(auto& node:nodes)if(node->report==report.id){
             if(node->boot&&report.id==2){if(report.bytes.size()<6)continue;int16_t x=int16_t(uint16_t(report.bytes[2])|(uint16_t(report.bytes[3])<<8)),y=int16_t(uint16_t(report.bytes[4])|(uint16_t(report.bytes[5])<<8));node->value={uint8_t(report.bytes[0]&7),uint8_t(std::max(-127,std::min(127,int(x)))),uint8_t(std::max(-127,std::min(127,int(y))))};}
             else node->value=report.bytes;
@@ -231,11 +237,11 @@ public:
                 gboolean live=true;bool disconnected=g_variant_lookup(changes,"Connected","b",&live)&&!live;g_variant_unref(changes);g_variant_unref(invalidated);
                 // Observe the actual disconnect edge. GetAll could already
                 // report a rapid reconnection and hide the loss of this link.
-                if(disconnected){self->connected=false;self->bondRequested=false;}else self->RefreshPeer();
+                if(disconnected)self->LinkClosed();else self->RefreshPeer();
                 self->Status();
             }},this,nullptr);
         auto daemonWatch=g_dbus_connection_signal_subscribe(bus,"org.freedesktop.DBus", "org.freedesktop.DBus","NameOwnerChanged","/org/freedesktop/DBus","org.bluez",G_DBUS_SIGNAL_FLAGS_NONE,
-            [](GDBusConnection*,const gchar*,const gchar*,const gchar*,const gchar*,GVariant* args,gpointer data){auto* self=static_cast<Server*>(data);const gchar *name,*oldOwner,*newOwner;g_variant_get(args,"(&s&s&s)",&name,&oldOwner,&newOwner);(void)name;(void)oldOwner;if(!*newOwner){self->application=false;self->advertisement=false;self->agent=false;self->connected=false;self->paired=false;for(auto& node:self->nodes)node->notify=false;KvmBluetoothStatus(false,false,"Bluetooth restarted. Reconnecting output host.");}},this,nullptr);
+            [](GDBusConnection*,const gchar*,const gchar*,const gchar*,const gchar*,GVariant* args,gpointer data){auto* self=static_cast<Server*>(data);const gchar *name,*oldOwner,*newOwner;g_variant_get(args,"(&s&s&s)",&name,&oldOwner,&newOwner);(void)name;(void)oldOwner;if(!*newOwner){self->application=false;self->advertisement=false;self->agent=false;self->LinkClosed();self->paired=false;for(auto& node:self->nodes)node->notify=false;KvmBluetoothStatus(false,false,"Bluetooth restarted. Reconnecting output host.");}},this,nullptr);
         auto* timer=g_timeout_source_new(1000);g_source_set_callback(timer,[](gpointer data)->gboolean{static_cast<Server*>(data)->Tick();return G_SOURCE_CONTINUE;},this,nullptr);g_source_attach(timer,context);
         auto* source=g_unix_fd_source_new(wake,G_IO_IN);g_source_set_callback(source,G_SOURCE_FUNC(+[](gint,GIOCondition,gpointer data)->gboolean{static_cast<Server*>(data)->Drain();return G_SOURCE_CONTINUE;}),this,nullptr);g_source_attach(source,context);
         g_main_loop_run(loop);g_source_destroy(timer);g_source_unref(timer);g_source_destroy(source);g_source_unref(source);
