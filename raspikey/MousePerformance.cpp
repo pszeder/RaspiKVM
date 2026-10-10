@@ -74,7 +74,8 @@ struct MousePerformance::Impl {
             // or modify pairing keys or overwrite BlueZ's persisted settings.
             alignas(uint32_t) uint8_t info[128]{};MouseLinkProtocol::Put16(info,uint16_t(index));
             if(ioctl(raw,_IOR('H',211,int),info)==0) {
-                std::ifstream profile("/var/lib/bluetooth/"+AddressText(info+2)+"/"+AddressText(address.data())+"/info");
+                std::array<uint8_t,6> local{};MouseLinkProtocol::ControllerAddress(info,sizeof(info),local);
+                std::ifstream profile("/var/lib/bluetooth/"+AddressText(local.data())+"/"+AddressText(address.data())+"/info");
                 std::string line;bool general=false;
                 while(std::getline(profile,line)) {
                     if(!line.empty()&&line[0]=='[')general=line=="[General]";

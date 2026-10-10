@@ -5,6 +5,11 @@
 
 int main() {
     using namespace MouseLinkProtocol;
+    uint8_t controllerInfo[]={0,0,'h','c','i','0',0,0,0,0,0x7a,0xf3,0x9f,0xeb,0x27,0xb8};
+    std::array<uint8_t,6> local{};
+    assert(ControllerAddress(controllerInfo,sizeof(controllerInfo),local));
+    assert((local==std::array<uint8_t,6>{{0x7a,0xf3,0x9f,0xeb,0x27,0xb8}}));
+    assert(!ControllerAddress(controllerInfo,15,local));
     std::array<uint8_t,6> address{};
     assert(Address("d1:65:57:8c:db:c1",address));
     assert((address==std::array<uint8_t,6>{{0xc1,0xdb,0x8c,0x57,0x65,0xd1}}));

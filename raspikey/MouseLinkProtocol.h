@@ -6,6 +6,12 @@
 namespace MouseLinkProtocol {
 inline uint16_t U16(const uint8_t* p){return uint16_t(p[0])|(uint16_t(p[1])<<8);}
 inline void Put16(uint8_t* p,uint16_t value){p[0]=uint8_t(value);p[1]=uint8_t(value>>8);}
+inline bool ControllerAddress(const uint8_t* info,size_t length,std::array<uint8_t,6>& address) {
+    // hci_dev_info begins with dev_id (2), name (8), then bdaddr (6).
+    if(length<16)return false;
+    for(size_t i=0;i<6;++i)address[i]=info[10+i];
+    return true;
+}
 inline bool Address(const std::string& text,std::array<uint8_t,6>& bytes) {
     if(text.size()!=17)return false;
     auto hex=[](char c)->int {if(c>='0'&&c<='9')return c-'0';if(c>='A'&&c<='F')return c-'A'+10;if(c>='a'&&c<='f')return c-'a'+10;return -1;};
