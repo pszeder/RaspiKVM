@@ -14,6 +14,7 @@
 #ifdef RASPIKEY_MODERN_RUNTIME
 #include "MouseBridge.h"
 #include "MouseControl.h"
+#include "KvmRouter.h"
 #endif
 
 
@@ -56,6 +57,13 @@ void HttpApiServer::Stop()
 
 void HttpApiServer::BuildRoutes()
 {
+#ifdef RASPIKEY_MODERN_RUNTIME
+    CROW_ROUTE(m_crowApp, "/kvm").methods("GET"_method,"POST"_method)([](const crow::request& req) {
+        try {crow::response result(200,req.method=="GET"_method?GetKvmStatus():UpdateKvm(req.body));result.set_header("Content-Type","application/json");result.set_header("Cache-Control","no-store");return result;}
+        catch(const std::invalid_argument& error){return crow::response(400,error.what());}
+        catch(const std::exception& error){return crow::response(500,error.what());}
+    });
+#endif
 	CROW_ROUTE(m_crowApp, "/") ([](const crow::request& req, crow::response& res)
 	{
 		res.code = 302;

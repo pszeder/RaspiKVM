@@ -2,6 +2,12 @@
 const BASE_URL = process.env.VUE_APP_BASE_URL;
 
 class ApiService {
+    async getKvm() {
+        return JSON.parse(await this.sendRequest('GET', `${BASE_URL}/kvm`));
+    }
+    async setKvm(request) {
+        return JSON.parse(await this.sendRequest('POST', `${BASE_URL}/kvm`, JSON.stringify(request)));
+    }
     async getMouseSettings(address) {
         return JSON.parse(await this.sendRequest('GET', `${BASE_URL}/mouse/settings?v=${encodeURIComponent(address)}`));
     }

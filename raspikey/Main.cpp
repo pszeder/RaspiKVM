@@ -38,6 +38,7 @@
 #include "MouseBridge.h"
 #include "KeyboardPerformance.h"
 #include "CpuPerformance.h"
+#include "KvmRouter.h"
 #endif
 
 using namespace std;
@@ -97,12 +98,14 @@ int main(int argc, char** argv)
 
 #ifdef RASPIKEY_MODERN_RUNTIME
 	CpuPerformance cpu;
+	StartKvm();
 	MouseBridge mouse;
 	mouse.Start();
 #endif
 	OpenDevicesLoop();
 #ifdef RASPIKEY_MODERN_RUNTIME
 	mouse.Stop();
+	StopKvm();
 #endif
 	StopAllServices();
 
@@ -245,6 +248,9 @@ void OpenDevicesLoop()
 		}
 		
 		// Close devices
+#ifdef RASPIKEY_MODERN_RUNTIME
+        KvmRelease(false);
+#endif
 		close(fds.inputEventFd);
 		close(fds.hidRawFd);
 		close(fds.hidgFd);
@@ -283,8 +289,13 @@ static int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd, Keyboa
 #ifdef RASPIKEY_MODERN_RUNTIME
         if(performance)eventFd=performance->EventFd();
         if(eventFd>=0)FD_SET(eventFd,&fds);
+        int ledFd=KvmLedFd();
+        if(ledFd>=0)FD_SET(ledFd,&fds);
 #endif
-		const int fdsmax = std::max(std::max(hidRawFd, hidgFd),eventFd);
+		int fdsmax = std::max(std::max(hidRawFd, hidgFd),eventFd);
+#ifdef RASPIKEY_MODERN_RUNTIME
+        fdsmax=std::max(fdsmax,ledFd);
+#endif
 
 		struct timeval tv{}; 
 		tv.tv_sec = 1;
@@ -332,7 +343,11 @@ static int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd, Keyboa
                 timespec filterClock{};clock_gettime(CLOCK_MONOTONIC,&filterClock);
                 uint64_t filteredAt=uint64_t(filterClock.tv_sec)*1000000+filterClock.tv_nsec/1000;
 #endif
+#ifdef RASPIKEY_MODERN_RUNTIME
+                len = KvmForward(false,buf,len);
+#else
 				len = write(hidgFd, buf, len); // Transfer report to hidg device
+#endif
 				if (len < 0)
 				{
 					ErrorMsg("Error write: %s", strerror(errno));
@@ -345,7 +360,19 @@ static int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd, Keyboa
 			}
 		}
 
-		// Direction: hidgFd -> hidRawFd
+		// Direction: host LED state -> physical keyboard.
+#ifdef RASPIKEY_MODERN_RUNTIME
+        if(FD_ISSET(hidgFd,&fds)){
+            ssize_t size=read(hidgFd,buf,sizeof(buf));
+            if(size==2&&buf[0]==1)KvmHostLed(false,buf[1]);
+            else if(size<=0)return -1;
+        }
+        if(ledFd>=0&&FD_ISSET(ledFd,&fds)&&KvmReadLed(buf)){
+            size_t size=2;
+            for(int k=0;prps[k]!=nullptr;++k)size=prps[k]->ProcessOutputReport(buf,size);
+            if(size&&write(hidRawFd,buf,size)<0)return -1;
+        }
+#else
 		if (FD_ISSET(hidgFd, &fds))
 		{
 			ssize_t len = read(hidgFd, buf, sizeof(buf));
@@ -374,7 +401,8 @@ static int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd, Keyboa
 					return -1;
 				}
 			}
-		}		
+		}
+#endif
 	}
 
 	return 0;
@@ -584,6 +612,4 @@ void SetSettings(const std::string& devId, const std::string& json)
 // Dummy methods to avoid static linking issues with libsystemd.a
 extern "C" int sd_listen_fds(int unset_environment) { return 0;  }
 extern "C" int sd_is_socket(int fd, int family, int type, int listening) { return 0; }
-
-
 

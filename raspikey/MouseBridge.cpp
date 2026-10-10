@@ -4,6 +4,7 @@
 #include "MousePerformance.h"
 #include "MouseControl.h"
 #include "MouseKeyboardMerge.h"
+#include "KvmRouter.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -33,19 +34,9 @@ void ButtonsResync(Device& device,const unsigned long* held,const std::string& a
 }
 uint64_t NowUs(){timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);return uint64_t(t.tv_sec)*1000000+t.tv_nsec/1000;}
 bool Write(int fd,const uint8_t* report,size_t size,const std::atomic<bool>& stopping) {
-    while(!stopping) {
-        ssize_t written=write(fd,report,size);
-        if(written==ssize_t(size))return true;
-        if(written<0&&(errno==EAGAIN||errno==EINTR)) {
-            pollfd ready{fd,POLLOUT,0};
-            int result=poll(&ready,1,50);
-            if(result<0&&errno!=EINTR)return false;
-            if(ready.revents&(POLLERR|POLLHUP|POLLNVAL))return false;
-            continue;
-        }
-        return false;
-    }
-    return false;
+    (void)fd;
+    if(stopping)return false;
+    return KvmForward(true,report,size)==int(size);
 }
 void Release(int fd) {
     // Nonblocking best effort; ExecStopPost also releases all collections.
@@ -167,7 +158,7 @@ void MouseBridge::Run() {
             }
             performance.Tick();
         }
-        Release(output);close(output);for(auto& device:devices)close(device.fd);
+        KvmRelease(true);Release(output);close(output);for(auto& device:devices)close(device.fd);
         {std::lock_guard<std::mutex> lock(stateMutex);state.connected=false;}
         performance.Disconnect();
     }
