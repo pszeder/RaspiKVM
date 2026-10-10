@@ -5,13 +5,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(RASPIKEY_MODERN_RUNTIME "Persistent state and current Raspberry Pi OS paths" ON)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
-pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
+pkg_check_modules(GIO REQUIRED gio-2.0)
 pkg_check_modules(DBUS REQUIRED IMPORTED_TARGET dbus-1)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
 file(GLOB SOURCE_LIST CONFIGURE_DEPENDS *.cpp bluetooth/*.cpp gdbus/*.c)
 add_executable(raspikey ${SOURCE_LIST})
-target_link_libraries(raspikey PRIVATE PkgConfig::GLIB PkgConfig::GIO PkgConfig::DBUS Boost::system Threads::Threads)
+# GIO headers use the existing GLib include directories. Apply its libraries
+# only: adding mount/blkid include flags to every source invalidates the Zero's
+# complete build cache although only the Bluetooth output needs GIO.
+target_link_libraries(raspikey PRIVATE PkgConfig::GLIB PkgConfig::DBUS ${GIO_LIBRARIES} Boost::system Threads::Threads)
 if(RASPIKEY_MODERN_RUNTIME)
   target_compile_definitions(raspikey PRIVATE RASPIKEY_MODERN_RUNTIME)
 endif()

@@ -200,9 +200,16 @@ public:
         context=g_main_context_new();g_main_context_push_thread_default(context);loop=g_main_loop_new(context,false);info=g_dbus_node_info_new_for_xml(Xml,nullptr);
         GError* error=nullptr;gchar* address=g_dbus_address_get_for_bus_sync(G_BUS_TYPE_SYSTEM,nullptr,&error);if(!address)throw std::runtime_error("System Bluetooth bus is unavailable.");bus=g_dbus_connection_new_for_address_sync(address,GDBusConnectionFlags(G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT|G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION),nullptr,nullptr,&error);g_free(address);if(!bus)throw std::runtime_error("Could not connect to Bluetooth bus.");
         Build();
+        // React to host disconnects immediately instead of waiting for the
+        // periodic reconnect/status check. Ignore source keyboard/mouse peers.
+        auto peerWatch=g_dbus_connection_signal_subscribe(bus,"org.bluez",Properties,"PropertiesChanged",nullptr,"org.bluez.Device1",G_DBUS_SIGNAL_FLAGS_NONE,
+            [](GDBusConnection*,const gchar*,const gchar* path,const gchar*,const gchar*,GVariant*,gpointer data){auto* self=static_cast<Server*>(data);auto address=HostAddress(path);if(!address.empty()&&address==KvmHostAddress()){self->RefreshPeer();self->Status();}},this,nullptr);
+        auto daemonWatch=g_dbus_connection_signal_subscribe(bus,"org.freedesktop.DBus", "org.freedesktop.DBus","NameOwnerChanged","/org/freedesktop/DBus","org.bluez",G_DBUS_SIGNAL_FLAGS_NONE,
+            [](GDBusConnection*,const gchar*,const gchar*,const gchar*,const gchar*,GVariant* args,gpointer data){auto* self=static_cast<Server*>(data);const gchar *name,*oldOwner,*newOwner;g_variant_get(args,"(&s&s&s)",&name,&oldOwner,&newOwner);(void)name;(void)oldOwner;if(!*newOwner){self->application=false;self->advertisement=false;self->agent=false;self->connected=false;self->paired=false;for(auto& node:self->nodes)node->notify=false;KvmBluetoothStatus(false,false,"Bluetooth restarted. Reconnecting output host.");}},this,nullptr);
         auto* timer=g_timeout_source_new(1000);g_source_set_callback(timer,[](gpointer data)->gboolean{static_cast<Server*>(data)->Tick();return G_SOURCE_CONTINUE;},this,nullptr);g_source_attach(timer,context);
         auto* source=g_unix_fd_source_new(wake,G_IO_IN);g_source_set_callback(source,G_SOURCE_FUNC(+[](gint,GIOCondition,gpointer data)->gboolean{static_cast<Server*>(data)->Drain();return G_SOURCE_CONTINUE;}),this,nullptr);g_source_attach(source,context);
         g_main_loop_run(loop);g_source_destroy(timer);g_source_unref(timer);g_source_destroy(source);g_source_unref(source);
+        g_dbus_connection_signal_unsubscribe(bus,peerWatch);g_dbus_connection_signal_unsubscribe(bus,daemonWatch);
     }
     ~Server(){if(bus){g_dbus_connection_close_sync(bus,nullptr,nullptr);g_object_unref(bus);}if(info)g_dbus_node_info_unref(info);if(loop)g_main_loop_unref(loop);if(context){g_main_context_pop_thread_default(context);g_main_context_unref(context);}}
 };
