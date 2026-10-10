@@ -6,8 +6,8 @@
     <template v-else>
       <div class="active-host" role="status" aria-live="polite">Input goes to <strong>{{ status.activeHost === 'bluetooth' ? (status.hostName || 'Bluetooth computer') : 'USB computer' }}</strong>.</div>
       <div class="host-actions">
-        <button type="button" :disabled="busy || status.activeHost === 'usb'" @click="command('switch', { host: 'usb' })">Use USB computer</button>
-        <button type="button" :disabled="busy || !status.ready || status.activeHost === 'bluetooth'" @click="command('switch', { host: 'bluetooth' })">Use Bluetooth computer</button>
+        <button type="button" :disabled="busy || (status.activeHost === 'usb' && !status.connecting)" @click="command('switch', { host: 'usb' })">Use USB computer</button>
+        <button type="button" :disabled="busy || !settings.enabled || !settings.hostAddress || status.activeHost === 'bluetooth' || status.connecting" @click="command('switch', { host: 'bluetooth' })">Use Bluetooth computer</button>
       </div>
       <label class="enable"><input type="checkbox" v-model="settings.enabled" :disabled="busy" @change="changed"> Enable Bluetooth output</label>
       <label class="enable"><input type="checkbox" v-model="settings.reverseBluetoothScroll" :disabled="busy" @change="changed"> Reverse scrolling on Bluetooth computer</label>
@@ -33,7 +33,7 @@
         </div>
       </div>
       <p v-if="error || status.error" class="error" role="alert">{{ error || status.error }}</p>
-      <p class="help">Bluetooth disconnects and Mac sleep return input to USB. Switching to a connected Bluetooth computer sends a brief Shift tap to request wake. RaspiKey starts on USB after a restart. USB networking stays available on the PC whichever host receives input.</p>
+      <p class="help">Bluetooth disconnects and Mac sleep return input to USB. Switching to Bluetooth connects if needed and sends a brief Shift tap to request wake. Updates start on USB and wait for your switch before advertising to the Mac. USB networking stays available on the PC whichever host receives input.</p>
     </template>
   </section>
 </template>

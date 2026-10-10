@@ -12,6 +12,7 @@ void KvmHostSeen(const std::string&,const std::string&,bool,bool){}
 void KvmHostLed(bool,uint8_t){}
 void KvmBluetoothStatus(bool active,bool ready,const std::string&){statusRegistered=active;statusReady=ready;}
 void KvmBluetoothSleeping(bool value){hostSleeping=value;++sleepEvents;}
+bool KvmBluetoothSelected(){return true;}
 
 int main(){
     Server server;
@@ -22,6 +23,7 @@ int main(){
     server.Status();assert(statusRegistered&&statusReady);
     const uint8_t pending[8]={0,0,1};assert(SendKvmBluetooth(2,pending,8));
     server.SetSuspend(true);assert(queue.empty()&&hostSleeping&&sleepEvents==1);
+    assert(!advertisementRequested);
     server.SetSuspend(true);assert(sleepEvents==1);
     server.Status();assert(statusReady); // sleep keeps the wake transport usable
     assert(server.ReportEnabled(*server.nodes[0]));assert(server.ReportEnabled(*server.nodes[1]));

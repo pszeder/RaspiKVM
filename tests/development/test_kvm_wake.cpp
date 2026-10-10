@@ -2,7 +2,7 @@
 #include "../../raspikey/KvmBluetooth.cpp"
 #include <cassert>
 #include <iostream>
-namespace {bool hostSleeping=false;}
+namespace {bool hostSleeping=false,selected=true;}
 bool KvmBluetoothEnabled(){return true;}
 bool KvmPairingOpen(){return false;}
 bool KvmAcceptHost(const std::string&){return true;}
@@ -11,6 +11,7 @@ void KvmHostSeen(const std::string&,const std::string&,bool,bool){}
 void KvmHostLed(bool,uint8_t){}
 void KvmBluetoothStatus(bool,bool,const std::string&){}
 void KvmBluetoothSleeping(bool value){hostSleeping=value;}
+bool KvmBluetoothSelected(){return selected;}
 
 int main(){
     auto* testBus=g_test_dbus_new(G_TEST_DBUS_NONE);g_test_dbus_up(testBus);
@@ -34,6 +35,7 @@ int main(){
             },&notifications,nullptr);
         auto* barrier=g_dbus_connection_call_sync(listener,"org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus","ListNames",nullptr,nullptr,G_DBUS_CALL_FLAGS_NONE,2000,nullptr,&error);assert(barrier);g_variant_unref(barrier);
         server.SetSuspend(true);assert(hostSleeping);
+        advertisementChanged=false; // isolate notification test from BlueZ calls
         server.Deliver({1,{2,0,0,0,0,0,0,0}}); // sleeping ordinary input emits nothing
         assert(WakeKvmBluetoothHost());server.Drain();assert(!hostSleeping&&!server.suspended);
         auto deadline=g_get_monotonic_time()+2000000;
@@ -41,6 +43,8 @@ int main(){
         assert(notifications.size()==2);
         assert(notifications[0]==std::vector<uint8_t>({2,0,0,0,0,0,0,0}));
         assert(notifications[1]==std::vector<uint8_t>(8));assert(keyboard->value==std::vector<uint8_t>(8));
+        selected=false;server.SetSuspend(true);server.WakeHost();assert(server.suspended&&hostSleeping);
+        assert(!advertisementRequested);
         g_dbus_connection_signal_unsubscribe(listener,subscription);g_dbus_connection_close_sync(listener,nullptr,nullptr);g_object_unref(listener);
     }
     g_test_dbus_down(testBus);g_object_unref(testBus);
