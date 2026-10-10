@@ -1,0 +1,21 @@
+[Unit]
+Description=RaspiKey development keyboard adapter
+Requires=raspikey-dev-usb.service
+After=raspikey-dev-usb.service bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/libexec/raspikey/enable-bluetooth.sh
+ExecStart=/opt/raspikey/current/raspikey
+WorkingDirectory=/opt/raspikey/current
+ExecStopPost=/usr/bin/python3 /usr/local/libexec/raspikey/release-keys.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
+User=root
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

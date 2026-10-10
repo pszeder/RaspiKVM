@@ -85,7 +85,7 @@ export default {
     deleteKeymapParent: null,
     setSettingsParent: null,
     deviceData: {},
-    disabled: false      
+    disabled: { type: Boolean, default: false }
   },
   data: () => ({        
   }),

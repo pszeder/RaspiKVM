@@ -29,8 +29,6 @@ HttpApiServer::~HttpApiServer()
 void HttpApiServer::MainThread()
 {
 	m_crowApp.port(80).run();
-
-	m_pMainThread = nullptr;
 }
 
 void HttpApiServer::Start()
@@ -43,6 +41,7 @@ void HttpApiServer::Start()
 
 void HttpApiServer::Stop()
 {
+	if (!m_pMainThread) return;
 	m_crowApp.stop();
 
 	m_pMainThread->join();
@@ -95,6 +94,10 @@ void HttpApiServer::BuildRoutes()
 
 	CROW_ROUTE(m_crowApp, "/save-data") ([]()
 	{
+#ifdef RASPIKEY_MODERN_RUNTIME
+		sync(); // Persistent writable state; never remount the boot partition.
+		return crow::response(200);
+#else
 		int retval = system(
 			"/bin/mount -o remount,rw /boot &&"\
 			"/bin/tar cpjf " DATA_ARCHIVE " -C /data . &&"\
@@ -104,16 +107,30 @@ void HttpApiServer::BuildRoutes()
 			return crow::response(500, Globals::FormatString("System command failed with exit code %d", retval));
 
 		return crow::response(200);
+#endif
 	});
 
 	CROW_ROUTE(m_crowApp, "/delete-data") ([]()
 	{
+#ifdef RASPIKEY_MODERN_RUNTIME
+		try
+		{
+			for (const auto& device : bluetooth::GetDevices())
+				bluetooth::RemoveDevice(device.Address.c_str());
+		}
+		catch (const exception& ex)
+		{
+			return crow::response(500, ex.what());
+		}
+		int retval = system("/usr/bin/find " DATA_DIR " -maxdepth 1 -type f -delete");
+#else
 		int retval = system(
 			"/bin/mount -o remount,rw /boot &&"\
 			"/bin/rm -f " DATA_ARCHIVE " &&"\
 			"/bin/mount -o remount,ro /boot &&"\
 			"/usr/sbin/service bluetooth stop &&"\
 			"/bin/rm -fr " DATA_DIR "/*");
+#endif
 
 		if (retval)
 			return crow::response(500, Globals::FormatString("System command failed with exit code %d", retval));
@@ -128,6 +145,14 @@ void HttpApiServer::BuildRoutes()
 		nlohmann::json jobj;
 
 		jobj["uptime"] = Globals::FormatString("%ld", Globals::GetUptime());
+#ifdef RASPIKEY_MODERN_RUNTIME
+		jobj["modernRuntime"] = true;
+		string instance;
+		if (Globals::FileReadAllText("/etc/raspikey-dev-id", instance))
+			jobj["instanceId"] = Globals::Trim(instance);
+		string module = Globals::g_szModuleDir;
+		jobj["release"] = module.substr(module.find_last_of('/') + 1);
+#endif
 
 		return crow::response(200, jobj.dump());
 	});

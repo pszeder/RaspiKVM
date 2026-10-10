@@ -3354,7 +3354,7 @@ namespace crow
 
         boost::asio::io_service& get_io_service()
         {
-            return socket_.get_io_service();
+            return static_cast<boost::asio::io_service&>(socket_.get_executor().context());
         }
 
         tcp::socket& raw_socket()
@@ -3429,7 +3429,7 @@ namespace crow
 
         boost::asio::io_service& get_io_service()
         {
-            return raw_socket().get_io_service();
+            return static_cast<boost::asio::io_service&>(raw_socket().get_executor().context());
         }
 
         template <typename F> 

@@ -22,6 +22,8 @@
 #include <tuple>
 #include <libgen.h>
 #include <sys/time.h>
+#include <glob.h>
+#include <linux/hidraw.h>
 #include "Globals.h"
 #include "ReportFilter.h"
 #include "A1644.h"
@@ -36,7 +38,7 @@
 using namespace std;
 
 HttpApiServer g_ApiServer;
-bool g_ExitRequested = false;
+volatile sig_atomic_t g_ExitRequested = 0;
 IReportFilter* g_pReportFilters[3] = { nullptr };
 
 int main(int argc, char** argv)
@@ -44,13 +46,15 @@ int main(int argc, char** argv)
 	InfoMsg("RaspiKey");
 
 	// Get RaspiKey binary "working" dir
-	readlink("/proc/self/exe", Globals::g_szModuleDir, sizeof(Globals::g_szModuleDir));
+	const ssize_t moduleLength = readlink("/proc/self/exe", Globals::g_szModuleDir, sizeof(Globals::g_szModuleDir) - 1);
+	if (moduleLength < 0) return -1;
+	Globals::g_szModuleDir[moduleLength] = '\0';
 	dirname(Globals::g_szModuleDir); //strip last component from path
 
 	InfoMsg(Globals::FormatString("System uptime: %lu", Globals::GetUptime()).c_str());	
 
 	struct stat info{};
-	if (!stat(DATA_DIR, &info) == 0 || !S_ISDIR(info.st_mode))
+	if (stat(DATA_DIR, &info) != 0 || !S_ISDIR(info.st_mode))
 	{
 		if (system("mkdir -p " DATA_DIR) != 0)
 		{
@@ -60,6 +64,7 @@ int main(int argc, char** argv)
 	}
 
 	// Restore data directory
+#ifndef RASPIKEY_MODERN_RUNTIME
 	if (stat(DATA_ARCHIVE, &info) == 0)
 	{
 		InfoMsg("Restoring data directory");
@@ -75,13 +80,16 @@ int main(int argc, char** argv)
 		}
 	}
 
+#endif
 	if (!StartServices())
 	{
 		ErrorMsg("StartServices() failed.");
+		StopAllServices();
 		return -1;
 	}
 
 	OpenDevicesLoop();
+	StopAllServices();
 
 	return 0;
 }
@@ -90,13 +98,12 @@ void SignalHandler(int signo)
 {
 	if (signo == SIGINT || signo == SIGTERM)
 	{
-		InfoMsg("Termination request received");		
-
-		StopAllServices();
+		// Join threads outside the asynchronous signal handler.
+		g_ExitRequested = 1;
 	}
 	else if (signo == SIGALRM) // Timer
 	{
-		InfoMsg("Timer elapsed signal received");
+		// No asynchronous work needed.
 	}
 }
 
@@ -265,7 +272,7 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 		if (FD_ISSET(hidRawFd, &fds))
 		{
 			ssize_t len = read(hidRawFd, buf, sizeof(buf));
-			if (len < 0)
+			if (len <= 0)
 			{
 				ErrorMsg("Error read: %s", strerror(errno));
 				return -1;
@@ -296,7 +303,7 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 		if (FD_ISSET(hidgFd, &fds))
 		{
 			ssize_t len = read(hidgFd, buf, sizeof(buf));
-			if (len < 0)
+			if (len <= 0)
 			{
 				ErrorMsg("Error read: %s", strerror(errno));
 				return -1;
@@ -329,6 +336,62 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 
 int OpenKbDevice(DeviceDescriptors& fds)
 {
+#ifdef RASPIKEY_MODERN_RUNTIME
+	// Match the Bluetooth keyboard and hidraw node by their kernel-provided identity.
+	glob_t events{};
+	if (glob("/dev/input/event*", 0, nullptr, &events) != 0) return -1;
+	for (size_t i = 0; i < events.gl_pathc; ++i)
+	{
+		int eventFd = open(events.gl_pathv[i], O_RDWR | O_CLOEXEC);
+		if (eventFd < 0) continue;
+		input_id id{};
+		unsigned long keys[(KEY_MAX / (8 * sizeof(unsigned long))) + 1]{};
+		char unique[256]{};
+		ioctl(eventFd, EVIOCGID, &id);
+		ioctl(eventFd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys);
+		ioctl(eventFd, EVIOCGUNIQ(sizeof(unique)), unique);
+		const bool keyboard = (keys[KEY_A / (8 * sizeof(unsigned long))] &
+			(1UL << (KEY_A % (8 * sizeof(unsigned long))))) != 0;
+		if (id.bustype != BUS_BLUETOOTH || !keyboard || !unique[0])
+		{ close(eventFd); continue; }
+		glob_t rawNodes{};
+		int rawFd = -1;
+		if (glob("/dev/hidraw*", 0, nullptr, &rawNodes) == 0)
+		{
+			for (size_t j = 0; j < rawNodes.gl_pathc; ++j)
+			{
+				int candidate = open(rawNodes.gl_pathv[j], O_RDWR | O_CLOEXEC);
+				if (candidate < 0) continue;
+				hidraw_devinfo rawInfo{};
+				char rawUnique[256]{};
+				ioctl(candidate, HIDIOCGRAWINFO, &rawInfo);
+				ioctl(candidate, HIDIOCGRAWUNIQ(sizeof(rawUnique)), rawUnique);
+				if (rawInfo.bustype == BUS_BLUETOOTH && rawInfo.vendor == id.vendor &&
+					rawInfo.product == id.product && strcasecmp(unique, rawUnique) == 0)
+				{ rawFd = candidate; break; }
+				close(candidate);
+			}
+		}
+		globfree(&rawNodes);
+		if (rawFd < 0 || ioctl(eventFd, EVIOCGRAB, 1) < 0)
+		{ if (rawFd >= 0) close(rawFd); close(eventFd); continue; }
+		char name[256]{}, phys[256]{};
+		ioctl(eventFd, EVIOCGNAME(sizeof(name)), name);
+		ioctl(eventFd, EVIOCGPHYS(sizeof(phys)), phys);
+		fds.inputEventFd = eventFd;
+		fds.hidRawFd = rawFd;
+		fds.inputEventDevName = name;
+		fds.inputEventDevPhys = phys;
+		fds.inputEventDevUniq = unique;
+		fds.vid = id.vendor;
+		fds.pid = id.product;
+		globfree(&events);
+		return 0;
+	}
+	globfree(&events);
+	return -1;
+#else
+
 	fds.inputEventFd = open(EVENT_DEV_PATH, O_RDWR);
 	if (fds.inputEventFd < 0)
 	{
@@ -377,6 +440,7 @@ int OpenKbDevice(DeviceDescriptors& fds)
 	}
 
 	return 0;
+#endif
 }
 
 int OpenHidgDevice(int& hidgFd)
