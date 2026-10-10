@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <cstdio>
 
 namespace {
 const char* Root="/org/raspikey/kvm";
@@ -74,7 +75,7 @@ public:
     std::vector<std::unique_ptr<Node>> nodes;
     std::vector<guint> registrations;
     bool application=false,advertisement=false,agent=false,discoverable=false,paired=false,connected=false;
-    uint8_t protocol=1;bool suspended=false;
+    uint8_t protocol=1;bool suspended=false,bondRequested=false;
     std::string observedHost;
     GVariant* Call(const char* path,const char* interface,const char* method,GVariant* args){GError* error=nullptr;auto result=g_dbus_connection_call_sync(bus,"org.bluez",path,interface,method,args,nullptr,G_DBUS_CALL_FLAGS_NONE,3000,nullptr,&error);if(!result){std::string message=error?error->message:"Bluetooth call failed";g_clear_error(&error);throw std::runtime_error(message);}return result;}
     void Command(const char* path,const char* interface,const char* method,GVariant* args){auto result=Call(path,interface,method,args);g_variant_unref(result);}
@@ -114,6 +115,15 @@ public:
     void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;connected=false;return;}observedHost=address;
         try{auto response=Call(HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);g_variant_unref(response);if(!connected)for(auto& node:nodes)node->notify=false;
         }catch(const std::exception&){connected=false;paired=false;KvmHostSeen(address,"",false,false);for(auto& node:nodes)node->notify=false;}
+        if(!connected)bondRequested=false;
+        if(connected&&!paired&&!bondRequested&&KvmPairingOpen()){
+            // macOS can wait for the HID peripheral to request encryption.
+            // Explicitly initiate bonding using this connection's own agent.
+            bondRequested=true;
+            fprintf(stderr,"KVM: initiating output-host bond\n");
+            g_dbus_connection_call(bus,"org.bluez",HostPath(address).c_str(),"org.bluez.Device1","Pair",nullptr,nullptr,G_DBUS_CALL_FLAGS_NONE,60000,nullptr,
+                [](GObject* object,GAsyncResult* result,gpointer data){auto* self=static_cast<Server*>(data);GError* error=nullptr;auto reply=g_dbus_connection_call_finish(G_DBUS_CONNECTION(object),result,&error);if(!reply){fprintf(stderr,"KVM: output-host bond failed: %s\n",error->message);KvmBluetoothStatus(self->application,false,error->message);g_error_free(error);}else{g_variant_unref(reply);self->RefreshPeer();self->Status();}},this);
+        }
     }
     void Status(){bool keyboard=false,mouse=false;for(auto& node:nodes)if(node->notify&&node->boot==(protocol==0)){keyboard|=node->report==1;mouse|=node->report==2;}KvmBluetoothStatus(application,connected&&paired&&keyboard&&mouse&&!suspended,"");}
     void Observe(GVariant* options){const gchar* device=nullptr;if(g_variant_lookup(options,"device","&o",&device)){auto address=HostAddress(device);if(address.empty()||!KvmAcceptHost(address))throw std::runtime_error("This Bluetooth output host is not authorized. Open pairing in the web UI.");RefreshPeer();}}
@@ -122,6 +132,8 @@ public:
         try{auto reply=Call(path.c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(reply,"(@a{sv})",&properties);gboolean trusted=false,bonded=false;const gchar* icon="";g_variant_lookup(properties,"Trusted","b",&trusted);g_variant_lookup(properties,"Paired","b",&bonded);g_variant_lookup(properties,"Icon","&s",&icon);bool allowed=trusted&&bonded&&(!strcmp(icon,"input-keyboard")||!strcmp(icon,"input-mouse"));g_variant_unref(properties);g_variant_unref(reply);return allowed;}catch(const std::exception&){return false;}
     }
     void Dispatch(const std::string& path,const std::string& interface,const std::string& method,GVariant* args,GDBusMethodInvocation* invocation){
+        // Control-plane diagnostics only; never log input report values.
+        if(interface=="org.bluez.Agent1"||interface=="org.bluez.GattCharacteristic1")fprintf(stderr,"KVM: %s %s\n",method.c_str(),path.c_str());
         if(interface=="org.freedesktop.DBus.ObjectManager"){
             GVariantBuilder objects;g_variant_builder_init(&objects,G_VARIANT_TYPE("a{oa{sa{sv}}}"));
             for(auto& node:nodes){GVariantBuilder interfaces;g_variant_builder_init(&interfaces,G_VARIANT_TYPE("a{sa{sv}}"));g_variant_builder_add(&interfaces,"{s@a{sv}}",node->interface.c_str(),NodeProperties(*node));g_variant_builder_add(&objects,"{o@a{sa{sv}}}",node->path.c_str(),g_variant_builder_end(&interfaces));}
@@ -196,7 +208,7 @@ public:
         }catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}
     }
     void Drain(){uint64_t count;while(read(wake,&count,sizeof(count))>0){}std::deque<Report> reports;std::string forgotten;{std::lock_guard<std::mutex> lock(queueMutex);reports.swap(queue);forgotten.swap(forgetHost);}
-        if(!forgotten.empty()){for(auto& node:nodes)node->notify=false;connected=false;paired=false;observedHost.clear();try{Command(Adapter,"org.bluez.Adapter1","RemoveDevice",g_variant_new("(o)",HostPath(forgotten).c_str()));}catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}reports.clear();}
+        if(!forgotten.empty()){for(auto& node:nodes)node->notify=false;connected=false;paired=false;bondRequested=false;observedHost.clear();try{Command(Adapter,"org.bluez.Adapter1","RemoveDevice",g_variant_new("(o)",HostPath(forgotten).c_str()));}catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}reports.clear();}
         if(!application||!connected||suspended)return;
         for(auto& report:reports)for(auto& node:nodes)if(node->report==report.id&&node->notify&&node->boot==(protocol==0)){
             if(node->boot&&report.id==2){if(report.bytes.size()<6)continue;int16_t x=int16_t(uint16_t(report.bytes[2])|(uint16_t(report.bytes[3])<<8)),y=int16_t(uint16_t(report.bytes[4])|(uint16_t(report.bytes[5])<<8));node->value={uint8_t(report.bytes[0]&7),uint8_t(std::max(-127,std::min(127,int(x)))),uint8_t(std::max(-127,std::min(127,int(y))))};}
