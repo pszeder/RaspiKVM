@@ -133,7 +133,12 @@ public:
                 [](GObject* object,GAsyncResult* result,gpointer data){auto* self=static_cast<Server*>(data);GError* error=nullptr;auto reply=g_dbus_connection_call_finish(G_DBUS_CONNECTION(object),result,&error);if(!reply){fprintf(stderr,"KVM: output-host bond failed: %s\n",error->message);KvmBluetoothStatus(self->application,false,error->message);g_error_free(error);}else{g_variant_unref(reply);self->RefreshPeer();self->Status();}},this);
         }
     }
-    void Status(){bool keyboard=false,mouse=false;for(auto& node:nodes)if(node->notify&&node->boot==(protocol==0)){keyboard|=node->report==1;mouse|=node->report==2;}KvmBluetoothStatus(application,connected&&paired&&keyboard&&mouse&&!suspended,"");}
+    // HID suspend is a host power-saving hint, not loss of the HID transport.
+    // This USB-powered bridge keeps scanning and forwarding user input. macOS
+    // can wake/reconnect without Exit Suspend, while Device1.Connected remains
+    // true for another bearer. Never gate readiness or reports on this hint.
+    bool ReportEnabled(const Node& node) const {return application&&connected&&paired&&node.notify&&node.boot==(protocol==0);}
+    void Status(){bool keyboard=false,mouse=false;for(auto& node:nodes)if(ReportEnabled(*node)){keyboard|=node->report==1;mouse|=node->report==2;}KvmBluetoothStatus(application,keyboard&&mouse,"");}
     void Observe(GVariant* options){const gchar* device=nullptr;if(g_variant_lookup(options,"device","&o",&device)){auto address=HostAddress(device);if(address.empty()||!KvmAcceptHost(address))throw std::runtime_error("This Bluetooth output host is not authorized. Open pairing in the web UI.");RefreshPeer();}}
     bool TrustedInput(const std::string& path,const std::string& uuid){
         if(uuid!="00001124-0000-1000-8000-00805f9b34fb"&&uuid!="00001812-0000-1000-8000-00805f9b34fb")return false;
@@ -222,7 +227,7 @@ public:
             else node->value=report.bytes;
             // Cache releases even while disconnected, so the next ReadValue
             // cannot return a stale held key or button.
-            if(application&&connected&&!suspended&&node->notify&&node->boot==(protocol==0))Changed(*node,"Value",Bytes(node->value));
+            if(ReportEnabled(*node))Changed(*node,"Value",Bytes(node->value));
         }
     }
     void Run(){
