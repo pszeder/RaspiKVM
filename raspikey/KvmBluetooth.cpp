@@ -226,7 +226,14 @@ public:
         // React to host disconnects immediately instead of waiting for the
         // periodic reconnect/status check. Ignore source keyboard/mouse peers.
         auto peerWatch=g_dbus_connection_signal_subscribe(bus,"org.bluez",Properties,"PropertiesChanged",nullptr,"org.bluez.Device1",G_DBUS_SIGNAL_FLAGS_NONE,
-            [](GDBusConnection*,const gchar*,const gchar* path,const gchar*,const gchar*,GVariant*,gpointer data){auto* self=static_cast<Server*>(data);auto address=HostAddress(path);if(!address.empty()&&address==KvmHostAddress()){self->RefreshPeer();self->Status();}},this,nullptr);
+            [](GDBusConnection*,const gchar*,const gchar* path,const gchar*,const gchar*,GVariant* args,gpointer data){auto* self=static_cast<Server*>(data);auto address=HostAddress(path);if(!address.empty()&&address==KvmHostAddress()){
+                const gchar* interface;GVariant *changes,*invalidated;g_variant_get(args,"(&s@a{sv}@as)",&interface,&changes,&invalidated);(void)interface;
+                gboolean live=true;bool disconnected=g_variant_lookup(changes,"Connected","b",&live)&&!live;g_variant_unref(changes);g_variant_unref(invalidated);
+                // Observe the actual disconnect edge. GetAll could already
+                // report a rapid reconnection and hide the loss of this link.
+                if(disconnected){self->connected=false;self->bondRequested=false;}else self->RefreshPeer();
+                self->Status();
+            }},this,nullptr);
         auto daemonWatch=g_dbus_connection_signal_subscribe(bus,"org.freedesktop.DBus", "org.freedesktop.DBus","NameOwnerChanged","/org/freedesktop/DBus","org.bluez",G_DBUS_SIGNAL_FLAGS_NONE,
             [](GDBusConnection*,const gchar*,const gchar*,const gchar*,const gchar*,GVariant* args,gpointer data){auto* self=static_cast<Server*>(data);const gchar *name,*oldOwner,*newOwner;g_variant_get(args,"(&s&s&s)",&name,&oldOwner,&newOwner);(void)name;(void)oldOwner;if(!*newOwner){self->application=false;self->advertisement=false;self->agent=false;self->connected=false;self->paired=false;for(auto& node:self->nodes)node->notify=false;KvmBluetoothStatus(false,false,"Bluetooth restarted. Reconnecting output host.");}},this,nullptr);
         auto* timer=g_timeout_source_new(1000);g_source_set_callback(timer,[](gpointer data)->gboolean{static_cast<Server*>(data)->Tick();return G_SOURCE_CONTINUE;},this,nullptr);g_source_attach(timer,context);
