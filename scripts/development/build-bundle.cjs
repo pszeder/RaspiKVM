@@ -13,7 +13,9 @@ function run(exe, args, cwd = repo, env = process.env) {
     if (r.error) throw r.error;
     if (r.status !== 0) throw Error(exe + ' failed: ' + r.status);
 }
-function git(args) { return cp.execFileSync('git', args, {cwd:sourceRepo, encoding:'utf8'}).trim(); }
+// WSL must interpret the Windows checkout's CRLF files like Windows Git does.
+// Otherwise an unchanged checkout is incorrectly labelled as a dirty release.
+function git(args) { return cp.execFileSync('git', ['-c','core.autocrlf=true',...args], {cwd:sourceRepo, encoding:'utf8'}).trim(); }
 run(npmExe, [...npmPrefix, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], ui);
 run(npmExe, [...npmPrefix, 'run', 'build'], ui, {...process.env, NODE_OPTIONS:'--openssl-legacy-provider'});
 const stage = fs.mkdtempSync(path.join(require('os').tmpdir(), 'raspikey-bundle-'));
