@@ -79,6 +79,7 @@ void StopKvm(){
 int KvmForward(bool mouse,const uint8_t* report,size_t size){
     std::lock_guard<std::mutex> lock(mutex);
     if(!report||!size)return 0;
+    size=KvmWireSize(mouse,report,size);
     uint8_t id=0;const uint8_t* payload=report+1;size_t length=size-1;
     std::array<uint8_t,8> keyboard{};uint8_t media[2]={};
     if(!mouse&&report[0]==1&&size==9){std::copy_n(payload,8,input.keyboard.begin());id=1;}

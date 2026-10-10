@@ -4,6 +4,12 @@
 #include <cstdint>
 #include <cstddef>
 
+inline size_t KvmWireSize(bool mouse,const uint8_t* report,size_t size){
+    // A1644/A1314 filters append an internal Fn/Eject byte. The existing USB
+    // gadget truncates it; Bluetooth needs the same explicit wire format.
+    return !mouse&&report&&size>=9&&report[0]==1?9:size;
+}
+
 // Physical state survives a switch, but is quarantined until every held input
 // has been released. Never replay a switch chord or a held drag on the new host.
 struct KvmInputState {

@@ -2,6 +2,8 @@
 #include <cassert>
 #include <iostream>
 int main(){
+    const uint8_t apple[10]={1,5,0,69,0,0,0,0,0,2};
+    assert(KvmWireSize(false,apple,10)==9);assert(KvmWireSize(false,apple,9)==9);assert(KvmWireSize(true,apple,9)==9);
     KvmInputState state;
     state.keyboard={5,0,69};assert(state.Trigger(5,69));assert(!state.Trigger(5,69));
     state.Switched();assert(state.Suppressed());state.keyboard={0x50,0,69};assert(!state.Trigger(5,69));assert(state.Suppressed());
