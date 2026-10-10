@@ -20,13 +20,13 @@ inline MouseConfiguration ParseMouseConfiguration(const std::string& body) {
     result.scrollMode=j.at("scrollMode").get<std::string>();
     if(result.scrollMode!="free"&&result.scrollMode!="ratchet"&&result.scrollMode!="smart")throw std::invalid_argument("Unknown scroll mode.");
     if(!j.at("smartShift").is_number_integer())throw std::invalid_argument("SmartShift speed must be a whole number from 2 to 49.");
-    int speed=j.at("smartShift").get<int>();if(speed<2||speed>49)throw std::invalid_argument("SmartShift speed must be from 2 to 49.");result.smartShift=unsigned(speed);
+    int64_t speed=j.at("smartShift").get<int64_t>();if(speed<2||speed>49)throw std::invalid_argument("SmartShift speed must be from 2 to 49.");result.smartShift=unsigned(speed);
     auto actions=j.at("buttons");if(!actions.is_object()||actions.size()!=5)throw std::invalid_argument("Supply all five button actions.");
     for(size_t i=0;i<5;++i) {
         auto action=actions.at(MouseButtonNames()[i]);auto kind=action.at("action").get<std::string>();
         if(kind!="default"&&kind!="shortcut"&&kind!="disabled")throw std::invalid_argument("Unknown button action.");
         if(!action.at("modifiers").is_number_integer()||!action.at("key").is_number_integer())throw std::invalid_argument("Choose a valid key combination.");
-        int modifiers=action.at("modifiers").get<int>(),key=action.at("key").get<int>();
+        int64_t modifiers=action.at("modifiers").get<int64_t>(),key=action.at("key").get<int64_t>();
         if(modifiers<0||modifiers>255||key<4||key>101)throw std::invalid_argument("Unsupported key combination.");
         result.buttons[i]={uint8_t(kind=="shortcut"?1:kind=="disabled"?2:0),uint8_t(modifiers),uint8_t(key)};
     }

@@ -17,13 +17,14 @@ int main() {
     packet={0x11,0,0xff,5,0x3e,2};assert(Hidpp::Error(packet.data(),20,5,3));
     MouseConfiguration defaults;auto json=MouseConfigurationJson(defaults);
     auto config=ParseMouseConfiguration(json.dump());assert(config.scrollMode=="free"&&config.buttons[4].action==1&&config.buttons[4].key==70);
-    for(int caseNo=0;caseNo<5;++caseNo) {
+    for(int caseNo=0;caseNo<6;++caseNo) {
         auto bad=json;
         if(caseNo==0)bad["scrollMode"]="invalid";
         if(caseNo==1)bad["smartShift"]=1;
         if(caseNo==2)bad["buttons"]["scrollToggle"]["modifiers"]=-1;
         if(caseNo==3)bad["buttons"]["scrollToggle"]["key"]=102;
         if(caseNo==4)bad["buttons"]["scrollToggle"]["action"]="run-shell";
+        if(caseNo==5)bad["buttons"]["scrollToggle"]["modifiers"]=uint64_t(4294967296);
         bool rejected=false;try{ParseMouseConfiguration(bad.dump());}catch(const std::exception&){rejected=true;}assert(rejected);
     }
     MouseKeys keys;std::array<uint8_t,9> report;
@@ -36,7 +37,7 @@ int main() {
     keys.Event(KEY_C,0);keys.Event(KEY_LEFTCTRL,0);assert(keys.Keyboard(report)&&report[1]==0&&report[3]==0);
     auto combined=MergeMouseKeyboard({{{2,1,0,6}},{{2,2,0,23,6}}});
     assert(combined[1]==3&&combined[3]==6&&combined[4]==23&&combined[5]==0);
-    combined=MergeMouseKeyboard({{{2,0,0,4,5,6,7,8,9}},{{2,2,0,10}}});
-    assert(combined[1]==2&&combined[3]==1&&combined[8]==1);
+    combined=MergeMouseKeyboard({{{2,1,0,4,5,6,7,8,9}},{{2,2,0,10}},{{2,4,0,11}}});
+    assert(combined[1]==7&&combined[3]==1&&combined[8]==1);
     std::cout<<"HID++ replies/notifications, strict settings, shortcut overlap/releases and keyboard merging passed\n";
 }

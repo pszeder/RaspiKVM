@@ -40,7 +40,7 @@
     <md-content class="md-elevation-1">
       
       <div class="md-headline"><md-icon>devices</md-icon> Keyboards and mice</div>
-      <div class="md-caption">Pair a Bluetooth keyboard or mouse. The MX Master 3S thumb button opens Windows Task View.</div>
+      <div class="md-caption">Pair a Bluetooth keyboard or mouse. Customize MX Master 3S scrolling and button shortcuts in its device card.</div>
 
       <div class="device-cards" v-if="connected">
         <DeviceCard v-for="device in devices" :key="device.address" :deviceData="device" 

@@ -61,7 +61,7 @@ export default {
   name: 'MouseSettings',
   props: { address: { type: String, required: true }, disabled: { type: Boolean, default: false } },
   data: () => ({
-    settings: null, status: {}, loading: true, saving: false, dirty: false, error: '', selected: 'scrollToggle', interval: null,
+    settings: null, status: {}, loading: true, saving: false, dirty: false, error: '', selected: 'scrollToggle', interval: null, generation: 0,
     keys,
     modifiers: [{ label: 'Ctrl', value: 1 }, { label: 'Shift', value: 2 }, { label: 'Alt', value: 4 }, { label: 'Win / Cmd', value: 8 }],
     buttons: [
@@ -89,21 +89,24 @@ export default {
     }
   },
   mounted () { this.load(); this.interval = setInterval(() => this.load(), 5000) },
-  beforeDestroy () { clearInterval(this.interval) },
+  beforeDestroy () { clearInterval(this.interval); this.generation++ },
   methods: {
     changed () { this.dirty = true; this.error = '' },
     modifierChanged (mask, checked) { this.current.modifiers = checked ? this.current.modifiers | mask : this.current.modifiers & ~mask; this.changed() },
     async load () {
       if (this.saving) return
+      const generation = this.generation
       try {
         const result = await ApiService.getMouseSettings(this.address)
+        if (generation !== this.generation) return
         this.status = result.status
         if (!this.dirty) this.settings = result.settings
         this.error = ''
-      } catch (error) { this.error = error.message || 'Could not reach RaspiKey. Reconnect and retry.' }
+      } catch (error) { if (generation === this.generation) this.error = error.message || 'Could not reach RaspiKey. Reconnect and retry.' }
       finally { this.loading = false }
     },
     async save () {
+      this.generation++
       this.saving = true; this.error = ''
       try {
         const result = await ApiService.setMouseSettings(this.address, this.settings)
