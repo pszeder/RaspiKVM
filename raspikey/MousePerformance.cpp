@@ -39,7 +39,7 @@ std::string AddressText(const uint8_t* bytes) {
 }
 
 struct MousePerformance::Impl {
-    bool lowLatency=access("/var/cache/raspikey-build/mouse-baseline",F_OK)!=0;
+    bool lowLatency=access("/var/cache/raspikey-build/build/mouse-baseline",F_OK)!=0;
     bool connected=false,niceApplied=false,requested=false,acknowledged=false,confirmed=false;
     int raw=-1,control=-1,controller=-1,status=-1;
     uint16_t handle=0,interval=0,latency=0,timeout=0;
