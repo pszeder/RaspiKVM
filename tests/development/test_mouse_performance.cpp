@@ -30,6 +30,18 @@ int main() {
     assert(!ConnectionUpdate(update,sizeof(update),65,result));
     for(size_t n=0;n<sizeof(update);++n)assert(!ConnectionUpdate(update,n,64,result));
     update[3]=2;assert(!ConnectionUpdate(update,sizeof(update),64,result));
+    Retune retry;
+    assert(!retry.Due(10000000));
+    retry.Sent(1000000);
+    assert(!retry.Due(5999999)&&retry.Due(6000000));
+    retry.Sent(6000000);assert(!retry.Due(60000000)); // Unconfirmed failures stop after one retry.
+    retry.Observe(6,0);assert(!retry.Due(60000000));
+    retry.Observe(9,44);assert(retry.Due(60000000)); // Later peripheral renegotiation is handled.
+    retry.Sent(60000000);assert(!retry.Due(120000000)); // No continuous retries without a new update.
+    retry.Observe(9,44);assert(!retry.Due(64999999)&&retry.Due(65000000));
+    retry.Observe(6,0);assert(!retry.Due(65000000)); // A delayed successful update cancels retry.
+    retry.Observe(6,44);assert(retry.Due(65000000));
+    assert(!retry.Due(1)); // Invalid clock order never bypasses the limit.
     MouseTiming timing;
     for(uint64_t i=0;i<100;++i){uint64_t stamp=1000000+i*11250;timing.Frame(stamp,stamp+200,stamp+250);}
     assert(timing.frames==100&&timing.gaps==99&&timing.gapSum/timing.gaps==11250);

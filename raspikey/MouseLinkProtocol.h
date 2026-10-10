@@ -34,6 +34,19 @@ inline std::array<uint8_t,23> Request(uint16_t index,const std::array<uint8_t,6>
     return result;
 }
 struct Update {uint16_t interval=0,latency=0,timeout=0;uint8_t status=0;};
+struct Retune {
+    uint64_t lastRequest=0;
+    unsigned attempts=0;
+    bool observed=false,pending=false;
+    void Sent(uint64_t now){lastRequest=now;++attempts;pending=false;}
+    void Observe(uint16_t interval,uint16_t latency){observed=true;pending=interval!=6||latency!=0;}
+    bool Due(uint64_t now) const {
+        // One retry without confirmation; later retries require a fresh,
+        // successful off-target update. Never retry continuously on failure.
+        return attempts&&now>=lastRequest&&now-lastRequest>=5000000&&
+            (pending||(attempts==1&&!observed));
+    }
+};
 inline bool CommandResult(const uint8_t* packet,size_t length,uint16_t controller,uint8_t& status) {
     if(length<9||U16(packet+2)!=controller||U16(packet+4)<3||size_t(U16(packet+4))+6>length)return false;
     auto event=U16(packet);

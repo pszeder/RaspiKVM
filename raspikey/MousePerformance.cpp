@@ -46,8 +46,8 @@ struct MousePerformance::Impl {
     uint8_t addressType=0;
     std::array<uint8_t,6> address{};
     MouseTiming timing;
-    uint64_t lastPublish=0,attached=0,lastRequest=0;
-    unsigned attempts=0;
+    uint64_t lastPublish=0;
+    MouseLinkProtocol::Retune retune;
     Impl() {
         pthread_setname_np(pthread_self(),"raspikey-mouse");
         if(lowLatency)niceApplied=setpriority(PRIO_PROCESS,syscall(SYS_gettid),-10)==0;
@@ -56,7 +56,7 @@ struct MousePerformance::Impl {
     void Close(){if(raw>=0)close(raw);if(control>=0)close(control);raw=control=-1;}
     void Attach(const std::string& text,bool mxMaster3s) {
         Close();connected=true;timing=MouseTiming{};controller=-1;interval=latency=timeout=0;
-        requested=acknowledged=confirmed=false;status=-1;addressType=0;attempts=0;attached=Now();lastRequest=0;
+        requested=acknowledged=confirmed=false;status=-1;addressType=0;retune=MouseLinkProtocol::Retune{};
         if(!mxMaster3s||!MouseLinkProtocol::Address(text,address))return;
         glob_t paths{};
         if(glob("/sys/class/bluetooth/hci[0-9]*",0,nullptr,&paths)!=0)return;
@@ -92,9 +92,10 @@ struct MousePerformance::Impl {
         }
     }
     void Request() {
-        if(control<0||attempts>=2)return;
+        if(control<0)return;
         auto packet=MouseLinkProtocol::Request(uint16_t(controller),address,addressType);
-        if(write(control,packet.data(),packet.size())==ssize_t(packet.size())){requested=true;lastRequest=Now();++attempts;}
+        retune.Sent(Now());
+        if(write(control,packet.data(),packet.size())==ssize_t(packet.size()))requested=true;
     }
     void PollLink() {
         uint8_t packet[512];
@@ -103,20 +104,20 @@ struct MousePerformance::Impl {
             MouseLinkProtocol::Update update;
             if(MouseLinkProtocol::ConnectionUpdate(packet,size_t(n),handle,update)) {
                 status=update.status;
-                if(!update.status){confirmed=true;interval=update.interval;latency=update.latency;timeout=update.timeout;}
+                if(!update.status){confirmed=true;interval=update.interval;latency=update.latency;timeout=update.timeout;retune.Observe(interval,latency);}
             }
         }
         if(control>=0)for(unsigned i=0;i<16;++i) {
             ssize_t n=read(control,packet,sizeof(packet));if(n<9)break;
             uint8_t result=0;
             if(MouseLinkProtocol::CommandResult(packet,size_t(n),uint16_t(controller),result)) {
-                acknowledged=result==0;if(result)status=result;
+                acknowledged=result==0;if(result){status=result;retune.pending=false;}
             }
         }
-        // One bounded retry after the peripheral's initial negotiation settles.
+        // The mouse can renegotiate after idling. Reapply only following an
+        // observed off-target update, rate-limited to one request per 5 seconds.
         // Unsupported/rejected tuning must never interrupt input forwarding.
-        if(lowLatency&&requested&&attempts==1&&Now()-attached>=5000000&&
-           (!confirmed||interval!=6||latency!=0))Request();
+        if(lowLatency&&retune.Due(Now()))Request();
     }
     void Publish(bool force=false) {
         uint64_t now=Now();if(!force&&now-lastPublish<3000000)return;lastPublish=now;
