@@ -113,8 +113,10 @@ public:
     }
     void Changed(Node& node,const char* property,GVariant* value){GVariantBuilder changes;g_variant_builder_init(&changes,G_VARIANT_TYPE("a{sv}"));g_variant_builder_add(&changes,"{sv}",property,value);g_dbus_connection_emit_signal(bus,nullptr,node.path.c_str(),Properties,"PropertiesChanged",g_variant_new("(s@a{sv}@as)",node.interface.c_str(),g_variant_builder_end(&changes),g_variant_new_strv(nullptr,0)),nullptr);}
     void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;connected=false;return;}observedHost=address;
-        try{auto response=Call(HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);g_variant_unref(response);if(!connected)for(auto& node:nodes)node->notify=false;
-        }catch(const std::exception&){connected=false;paired=false;KvmHostSeen(address,"",false,false);for(auto& node:nodes)node->notify=false;}
+        try{auto response=Call(HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);g_variant_unref(response);
+        }catch(const std::exception&){connected=false;paired=false;KvmHostSeen(address,"",false,false);}
+        // BlueZ retains bonded peers' CCC configuration across disconnects.
+        // Notification state belongs to StartNotify/StopNotify, not this link.
         if(!connected)bondRequested=false;
         if(connected&&!paired&&!bondRequested&&KvmPairingOpen()){
             // macOS can wait for the HID peripheral to request encryption.
@@ -209,11 +211,12 @@ public:
     }
     void Drain(){uint64_t count;while(read(wake,&count,sizeof(count))>0){}std::deque<Report> reports;std::string forgotten;{std::lock_guard<std::mutex> lock(queueMutex);reports.swap(queue);forgotten.swap(forgetHost);}
         if(!forgotten.empty()){for(auto& node:nodes)node->notify=false;connected=false;paired=false;bondRequested=false;observedHost.clear();try{Command(Adapter,"org.bluez.Adapter1","RemoveDevice",g_variant_new("(o)",HostPath(forgotten).c_str()));}catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}reports.clear();}
-        if(!application||!connected||suspended)return;
-        for(auto& report:reports)for(auto& node:nodes)if(node->report==report.id&&node->notify&&node->boot==(protocol==0)){
+        for(auto& report:reports)for(auto& node:nodes)if(node->report==report.id){
             if(node->boot&&report.id==2){if(report.bytes.size()<6)continue;int16_t x=int16_t(uint16_t(report.bytes[2])|(uint16_t(report.bytes[3])<<8)),y=int16_t(uint16_t(report.bytes[4])|(uint16_t(report.bytes[5])<<8));node->value={uint8_t(report.bytes[0]&7),uint8_t(std::max(-127,std::min(127,int(x)))),uint8_t(std::max(-127,std::min(127,int(y))))};}
             else node->value=report.bytes;
-            Changed(*node,"Value",Bytes(node->value));
+            // Cache releases even while disconnected, so the next ReadValue
+            // cannot return a stale held key or button.
+            if(application&&connected&&!suspended&&node->notify&&node->boot==(protocol==0))Changed(*node,"Value",Bytes(node->value));
         }
     }
     void Run(){
