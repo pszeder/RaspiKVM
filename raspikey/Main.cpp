@@ -36,9 +36,13 @@
 #include "KeyMapReportFilter.h"
 #ifdef RASPIKEY_MODERN_RUNTIME
 #include "MouseBridge.h"
+#include "KeyboardPerformance.h"
+#include "CpuPerformance.h"
 #endif
 
 using namespace std;
+class KeyboardPerformance;
+static int ForwardingLoop(IReportFilter** prps,int hidRawFd,int hidgFd,KeyboardPerformance* performance);
 
 HttpApiServer g_ApiServer;
 volatile sig_atomic_t g_ExitRequested = 0;
@@ -92,6 +96,7 @@ int main(int argc, char** argv)
 	}
 
 #ifdef RASPIKEY_MODERN_RUNTIME
+	CpuPerformance cpu;
 	MouseBridge mouse;
 	mouse.Start();
 #endif
@@ -221,7 +226,14 @@ void OpenDevicesLoop()
 		}		
 
 		// Start forwarding loop with the established devices
-		ForwardingLoop(g_pReportFilters, fds.hidRawFd, fds.hidgFd);
+#ifdef RASPIKEY_MODERN_RUNTIME
+        {
+            KeyboardPerformance performance(fds.inputEventFd);
+            ForwardingLoop(g_pReportFilters, fds.hidRawFd, fds.hidgFd, &performance);
+        }
+#else
+        ForwardingLoop(g_pReportFilters, fds.hidRawFd, fds.hidgFd);
+#endif
 
 		// This is to prevent the frozen "C" key situation if the user presses Ctrl-C in the raspikey process console.
 		if (g_ExitRequested)
@@ -253,7 +265,11 @@ void StopAllServices()
 	g_ApiServer.Stop();	
 }
 
-int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
+int ForwardingLoop(IReportFilter** prps,int hidRawFd,int hidgFd)
+{
+    return ForwardingLoop(prps,hidRawFd,hidgFd,nullptr);
+}
+static int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd, KeyboardPerformance* performance)
 {
 	uint8_t buf[16] = { 0 };
 
@@ -263,7 +279,12 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 		FD_ZERO(&fds);
 		FD_SET(hidRawFd, &fds);
 		FD_SET(hidgFd, &fds);
-		const int fdsmax = std::max(hidRawFd, hidgFd);
+        int eventFd=-1;
+#ifdef RASPIKEY_MODERN_RUNTIME
+        if(performance)eventFd=performance->EventFd();
+        if(eventFd>=0)FD_SET(eventFd,&fds);
+#endif
+		const int fdsmax = std::max(std::max(hidRawFd, hidgFd),eventFd);
 
 		struct timeval tv{}; 
 		tv.tv_sec = 1;
@@ -278,6 +299,9 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 			return -1; // Any other error, exit the loop
 		}
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+        if(performance){performance->Drain();performance->Tick();}
+#endif
 		// Direction: hidRawFd -> hidgFd
 		if (FD_ISSET(hidRawFd, &fds))
 		{
@@ -288,6 +312,10 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 				return -1;
 			}
 					
+#ifdef RASPIKEY_MODERN_RUNTIME
+            timespec readClock{};clock_gettime(CLOCK_MONOTONIC,&readClock);
+            uint64_t readAt=uint64_t(readClock.tv_sec)*1000000+readClock.tv_nsec/1000;
+#endif
 			DbgMsg("[in] -> %s", Globals::FormatBuffer(buf, len).c_str());
 
 			// Process input report with each IReportFilter
@@ -300,12 +328,20 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 			{
 				DbgMsg("[in] ~> %s", Globals::FormatBuffer(buf, len).c_str());
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+                timespec filterClock{};clock_gettime(CLOCK_MONOTONIC,&filterClock);
+                uint64_t filteredAt=uint64_t(filterClock.tv_sec)*1000000+filterClock.tv_nsec/1000;
+#endif
 				len = write(hidgFd, buf, len); // Transfer report to hidg device
 				if (len < 0)
 				{
 					ErrorMsg("Error write: %s", strerror(errno));
 					return -1;
 				}
+#ifdef RASPIKEY_MODERN_RUNTIME
+                timespec queuedClock{};clock_gettime(CLOCK_MONOTONIC,&queuedClock);
+                if(performance)performance->Report(readAt,filteredAt,uint64_t(queuedClock.tv_sec)*1000000+queuedClock.tv_nsec/1000);
+#endif
 			}
 		}
 
@@ -548,9 +584,6 @@ void SetSettings(const std::string& devId, const std::string& json)
 // Dummy methods to avoid static linking issues with libsystemd.a
 extern "C" int sd_listen_fds(int unset_environment) { return 0;  }
 extern "C" int sd_is_socket(int fd, int family, int type, int listening) { return 0; }
-
-
-
 
 
 
