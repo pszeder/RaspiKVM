@@ -1,5 +1,6 @@
 #include "KvmBluetooth.h"
 #include "KvmRouter.h"
+#include "KvmPower.h"
 #include <gio/gio.h>
 #include <glib-unix.h>
 #include <sys/eventfd.h>
@@ -113,7 +114,7 @@ public:
     }
     void Changed(Node& node,const char* property,GVariant* value){GVariantBuilder changes;g_variant_builder_init(&changes,G_VARIANT_TYPE("a{sv}"));g_variant_builder_add(&changes,"{sv}",property,value);g_dbus_connection_emit_signal(bus,nullptr,node.path.c_str(),Properties,"PropertiesChanged",g_variant_new("(s@a{sv}@as)",node.interface.c_str(),g_variant_builder_end(&changes),g_variant_new_strv(nullptr,0)),nullptr);}
     void LinkClosed(){
-        connected=false;bondRequested=false;suspended=false;protocol=1;
+        connected=false;bondRequested=false;SetSuspend(false);protocol=1;
         for(auto& node:nodes)if(node->uuid=="2a4c"||node->uuid=="2a4e")node->value={1};
     }
     void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;LinkClosed();return;}observedHost=address;
@@ -133,12 +134,17 @@ public:
                 [](GObject* object,GAsyncResult* result,gpointer data){auto* self=static_cast<Server*>(data);GError* error=nullptr;auto reply=g_dbus_connection_call_finish(G_DBUS_CONNECTION(object),result,&error);if(!reply){fprintf(stderr,"KVM: output-host bond failed: %s\n",error->message);KvmBluetoothStatus(self->application,false,error->message);g_error_free(error);}else{g_variant_unref(reply);self->RefreshPeer();self->Status();}},this);
         }
     }
-    // HID suspend is a host power-saving hint, not loss of the HID transport.
-    // This USB-powered bridge keeps scanning and forwarding user input. macOS
-    // can wake/reconnect without Exit Suspend, while Device1.Connected remains
-    // true for another bearer. Never gate readiness or reports on this hint.
+    // A sleeping host can still accept a deliberate wake request. Keep its
+    // transport ready, but route ordinary input to USB until the next selection.
     bool ReportEnabled(const Node& node) const {return application&&connected&&paired&&node.notify&&node.boot==(protocol==0);}
     void Status(){bool keyboard=false,mouse=false;for(auto& node:nodes)if(ReportEnabled(*node)){keyboard|=node->report==1;mouse|=node->report==2;}KvmBluetoothStatus(application,keyboard&&mouse,"");}
+    void SetSuspend(bool value){
+        if(suspended==value)return;
+        suspended=value;
+        // Do not let pre-sleep queued movement wake the Mac after USB fallback.
+        if(value){std::lock_guard<std::mutex> lock(queueMutex);queue.clear();}
+        KvmBluetoothSleeping(value);
+    }
     void Observe(GVariant* options){const gchar* device=nullptr;if(g_variant_lookup(options,"device","&o",&device)){auto address=HostAddress(device);if(address.empty()||!KvmAcceptHost(address))throw std::runtime_error("This Bluetooth output host is not authorized. Open pairing in the web UI.");RefreshPeer();}}
     bool TrustedInput(const std::string& path,const std::string& uuid){
         if(uuid!="00001124-0000-1000-8000-00805f9b34fb"&&uuid!="00001812-0000-1000-8000-00805f9b34fb")return false;
@@ -177,7 +183,7 @@ public:
             GVariant* bytes;GVariant* options;g_variant_get(args,"(@ay@a{sv})",&bytes,&options);
             try{Observe(options);}catch(...){g_variant_unref(bytes);g_variant_unref(options);throw;}g_variant_unref(options);gsize count=0;const auto* value=static_cast<const uint8_t*>(g_variant_get_fixed_array(bytes,&count,1));
             if(count!=1||(node->uuid=="2a4e"&&value[0]>1)||(node->uuid=="2a4c"&&value[0]>1)){g_variant_unref(bytes);g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.InvalidValueLength","Expected one valid byte.");return;}
-            node->value.assign(value,value+count);if(node->uuid=="2a4e")protocol=value[0];if(node->uuid=="2a4c")suspended=value[0]==0;if(node->uuid=="2a4e"||node->uuid=="2a4c")fprintf(stderr,"KVM: %s mode %u\n",node->uuid.c_str(),unsigned(value[0]));if(node->uuid=="2a32"||node->path==std::string(Root)+"/hid/led")KvmHostLed(true,value[0]);g_variant_unref(bytes);Status();g_dbus_method_invocation_return_value(invocation,nullptr);return;
+            node->value.assign(value,value+count);if(node->uuid=="2a4e")protocol=value[0];if(node->uuid=="2a4c")SetSuspend(value[0]==0);if(node->uuid=="2a4e"||node->uuid=="2a4c")fprintf(stderr,"KVM: %s mode %u\n",node->uuid.c_str(),unsigned(value[0]));if(node->uuid=="2a32"||node->path==std::string(Root)+"/hid/led")KvmHostLed(true,value[0]);g_variant_unref(bytes);Status();g_dbus_method_invocation_return_value(invocation,nullptr);return;
         }
         if(method=="StartNotify"||method=="StopNotify"){
             if(std::find(node->flags.begin(),node->flags.end(),"notify")==node->flags.end()){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.NotSupported","Not a notification report.");return;}
@@ -190,7 +196,8 @@ public:
         const std::string hid=std::string(Root)+"/hid",device=std::string(Root)+"/device",battery=std::string(Root)+"/battery";
         Add(hid,"org.bluez.GattService1","1812");Add(device,"org.bluez.GattService1","180a");Add(battery,"org.bluez.GattService1","180f");
         Add(hid+"/map","org.bluez.GattCharacteristic1","2a4b",hid,{"read"},{std::begin(Map),std::end(Map)});
-        Add(hid+"/info","org.bluez.GattCharacteristic1","2a4a",hid,{"read"},{0x11,1,0,2});
+        // RemoteWake + NormallyConnectable. Hosts may cache this for a bond.
+        Add(hid+"/info","org.bluez.GattCharacteristic1","2a4a",hid,{"read"},{0x11,1,0,3});
         Add(hid+"/control","org.bluez.GattCharacteristic1","2a4c",hid,{"write-without-response","encrypt-write"},{1});
         Add(hid+"/protocol","org.bluez.GattCharacteristic1","2a4e",hid,{"read","write-without-response","encrypt-write"},{1});
         for(uint8_t id:{1,2,3}){auto name=hid+"/report"+std::to_string(id);Add(name,"org.bluez.GattCharacteristic1","2a4d",hid,{"read","notify","encrypt-read"},std::vector<uint8_t>(id==3?2:8),id);Add(name+"/reference","org.bluez.GattDescriptor1","2908",name,{"read"},{id,1});}
@@ -222,13 +229,27 @@ public:
     }
     void Drain(){uint64_t count;while(read(wake,&count,sizeof(count))>0){}std::deque<Report> reports;std::string forgotten;{std::lock_guard<std::mutex> lock(queueMutex);reports.swap(queue);forgotten.swap(forgetHost);}
         if(!forgotten.empty()){for(auto& node:nodes)node->notify=false;LinkClosed();paired=false;observedHost.clear();try{Command(Adapter,"org.bluez.Adapter1","RemoveDevice",g_variant_new("(o)",HostPath(forgotten).c_str()));}catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}reports.clear();}
-        for(auto& report:reports)for(auto& node:nodes)if(node->report==report.id){
+        for(auto& report:reports){if(report.id==0)WakeHost();else Deliver(report);}
+    }
+    void Deliver(const Report& report){
+        for(auto& node:nodes)if(node->report==report.id){
             if(node->boot&&report.id==2){if(report.bytes.size()<6)continue;int16_t x=int16_t(uint16_t(report.bytes[2])|(uint16_t(report.bytes[3])<<8)),y=int16_t(uint16_t(report.bytes[4])|(uint16_t(report.bytes[5])<<8));node->value={uint8_t(report.bytes[0]&7),uint8_t(std::max(-127,std::min(127,int(x)))),uint8_t(std::max(-127,std::min(127,int(y))))};}
             else node->value=report.bytes;
             // Cache releases even while disconnected, so the next ReadValue
             // cannot return a stale held key or button.
-            if(ReportEnabled(*node))Changed(*node,"Value",Bytes(node->value));
+            if(!suspended&&ReportEnabled(*node))Changed(*node,"Value",Bytes(node->value));
         }
+    }
+    void WakeHost(){
+        bool keyboard=false,mouse=false;for(auto& node:nodes)if(ReportEnabled(*node)){keyboard|=node->report==1;mouse|=node->report==2;}
+        if(!keyboard||!mouse){Status();return;}
+        // Clear the stale hint even if macOS never sends Exit Suspend. A lone
+        // Shift tap requests wake without typing a character or clicking UI.
+        SetSuspend(false);
+        for(auto& node:nodes)if(node->uuid=="2a4c")node->value={1};
+        Deliver({1,{2,0,0,0,0,0,0,0}});
+        Deliver({1,{0,0,0,0,0,0,0,0}});
+        fprintf(stderr,"KVM: sent output-host wake request\n");
     }
     void Run(){
         context=g_main_context_new();g_main_context_push_thread_default(context);loop=g_main_loop_new(context,false);info=g_dbus_node_info_new_for_xml(Xml,nullptr);
@@ -258,4 +279,5 @@ public:
 void StartKvmBluetooth(){if(worker.joinable())return;stopping=false;worker=std::thread([]{while(!stopping){try{Server server;server.Run();}catch(const std::exception& ex){KvmBluetoothStatus(false,false,ex.what());for(unsigned i=0;i<20&&!stopping;++i)std::this_thread::sleep_for(std::chrono::milliseconds(100));}}});}
 void StopKvmBluetooth(){stopping=true;uint64_t one=1;write(wake,&one,sizeof(one));if(worker.joinable())worker.join();std::lock_guard<std::mutex> lock(queueMutex);queue.clear();}
 bool SendKvmBluetooth(uint8_t id,const uint8_t* data,size_t size){if(stopping||wake<0)return false;std::lock_guard<std::mutex> lock(queueMutex);if(queue.size()>=256){queue.clear();const uint8_t zero[8]={};for(uint8_t report:{1,2,3})queue.push_back({report,{zero,zero+(report==3?2:8)}});uint64_t one=1;write(wake,&one,sizeof(one));return false;}queue.push_back({id,{data,data+size}});uint64_t one=1;write(wake,&one,sizeof(one));return true;}
+bool WakeKvmBluetoothHost(){const uint8_t zero=0;return SendKvmBluetooth(0,&zero,0);}
 void ForgetKvmBluetoothHost(const char* address){std::lock_guard<std::mutex> lock(queueMutex);forgetHost=address;uint64_t one=1;write(wake,&one,sizeof(one));}

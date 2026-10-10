@@ -24,7 +24,7 @@
       <button class="save" type="button" :disabled="busy || !dirty || !(settings.shortcut.modifiers & 13)" @click="save">{{ busy ? 'Working…' : 'Save host settings' }}</button>
       <div class="pairing">
         <h3>Bluetooth computer</h3>
-        <p v-if="settings.hostAddress">{{ status.hostName || 'Paired computer' }} · {{ status.ready ? 'Ready to receive input' : 'Waiting for Bluetooth connection' }}</p>
+        <p v-if="settings.hostAddress">{{ status.hostName || 'Paired computer' }} · {{ status.ready ? (status.sleeping ? 'Sleep reported · switch to Bluetooth to wake' : 'Ready to receive input') : 'Waiting for Bluetooth connection' }}</p>
         <p v-else>Save with Bluetooth output enabled, then open pairing. On the Mac, open System Settings → Bluetooth and connect to <strong>RaspiKey KVM</strong>.</p>
         <p v-if="status.pairing" role="status">Pairing is open for {{ status.pairingSeconds }} seconds. Keep the keyboard and mouse connected to RaspiKey.</p>
         <div class="host-actions">
@@ -33,7 +33,7 @@
         </div>
       </div>
       <p v-if="error || status.error" class="error" role="alert">{{ error || status.error }}</p>
-      <p class="help">Bluetooth disconnects return input to USB. RaspiKey starts on USB after a restart. USB networking stays available on the PC whichever host receives input.</p>
+      <p class="help">Bluetooth disconnects and Mac sleep return input to USB. Switching to a connected Bluetooth computer sends a brief Shift tap to request wake. RaspiKey starts on USB after a restart. USB networking stays available on the PC whichever host receives input.</p>
     </template>
   </section>
 </template>

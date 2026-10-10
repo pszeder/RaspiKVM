@@ -1,6 +1,7 @@
 #include "KvmRouter.h"
 #include "KvmBluetooth.h"
 #include "KvmInputState.h"
+#include "KvmPower.h"
 #include "Globals.h"
 #include "json.hpp"
 #include <mutex>
@@ -21,6 +22,7 @@ std::mutex mutex;
 KvmInputState input;
 int usb[2]={-1,-1};
 bool enabled=false,bluetooth=false,registered=false,ready=false;
+bool sleeping=false;
 bool reverseBluetoothScroll=false;
 uint8_t modifiers=5,key=69;
 std::string hostAddress,hostName,pendingAddress,error;
@@ -53,8 +55,12 @@ void Switch(bool target){
     if(bluetooth)ReleaseBluetooth();else ReleaseUsb();
     input.Switched();
     if(target&&(!enabled||!ready)){error="Bluetooth host is not ready. Input remains on USB.";return;}
+    bool selectingBluetooth=target&&!bluetooth;
     if(bluetooth!=target){bluetooth=target;++switches;Led();}error.clear();
     if(bluetooth)ReleaseBluetooth();else ReleaseUsb();
+    // Always request wake on selection: a host may wake without Exit Suspend,
+    // or its last sleep hint may have been lost during application restart.
+    if(selectingBluetooth&&!WakeKvmBluetoothHost()){Switch(false);error="Could not queue Bluetooth wake. Input returned to USB.";}
 }
 uint16_t Media(uint8_t bits){const uint16_t usages[]={0xb5,0xb6,0xb7,0xcd,0xe2,0xe9,0xea};for(unsigned i=0;i<7;++i)if(bits&(1<<i))return usages[i];return 0;}
 void Validate(const nlohmann::json& config,bool& nextEnabled,uint8_t& nextMods,uint8_t& nextKey,bool& nextReverse){
@@ -101,7 +107,7 @@ int KvmForward(bool mouse,const uint8_t* report,size_t size){
     return int(size);
 }
 void KvmRelease(bool mouse){std::lock_guard<std::mutex> lock(mutex);if(mouse){input.auxiliary={};input.buttons=0;input.auxiliaryConsumer=0;}else{input.keyboard={};input.consumer=0;input.chordHeld=false;}ReleaseUsb();ReleaseBluetooth();input.Switched();}
-std::string GetKvmStatus(){std::lock_guard<std::mutex> lock(mutex);return nlohmann::json{{"settings",Settings()},{"status",{{"activeHost",bluetooth?"bluetooth":"usb"},{"registered",registered},{"ready",ready},{"pairing",Pairing()},{"pairingSeconds",Pairing()?std::chrono::duration_cast<std::chrono::seconds>(pairing-Clock::now()).count():0},{"hostName",hostName},{"error",error},{"switches",switches}}}}.dump();}
+std::string GetKvmStatus(){std::lock_guard<std::mutex> lock(mutex);return nlohmann::json{{"settings",Settings()},{"status",{{"activeHost",bluetooth?"bluetooth":"usb"},{"registered",registered},{"ready",ready},{"sleeping",sleeping},{"pairing",Pairing()},{"pairingSeconds",Pairing()?std::chrono::duration_cast<std::chrono::seconds>(pairing-Clock::now()).count():0},{"hostName",hostName},{"error",error},{"switches",switches}}}}.dump();}
 std::string UpdateKvm(const std::string& body){
     if(body.size()>2048)throw std::invalid_argument("Host settings are too large.");
     try{auto request=nlohmann::json::parse(body);auto action=request.at("action").get<std::string>();
@@ -119,7 +125,8 @@ bool KvmPairingOpen(){std::lock_guard<std::mutex> lock(mutex);return Pairing();}
 std::string KvmHostAddress(){std::lock_guard<std::mutex> lock(mutex);return hostAddress.empty()?pendingAddress:hostAddress;}
 bool KvmAcceptHost(const std::string& raw){auto address=Address(raw);std::lock_guard<std::mutex> lock(mutex);if(!enabled)return false;if(!hostAddress.empty())return address==hostAddress;if(!Pairing())return false;if(!pendingAddress.empty())return address==pendingAddress;pendingAddress=address;return true;}
 void KvmHostSeen(const std::string& raw,const std::string& name,bool connected,bool paired){auto address=Address(raw);std::lock_guard<std::mutex> lock(mutex);if(address!=hostAddress&&address!=pendingAddress)return;hostName=name;if(paired&&hostAddress.empty()&&Pairing()){hostAddress=address;try{Save();pairing={};}catch(const std::exception& ex){error=ex.what();hostAddress.clear();}}if(!connected){ready=false;if(bluetooth)Switch(false);}}
-void KvmBluetoothStatus(bool active,bool available,const std::string& message){std::lock_guard<std::mutex> lock(mutex);registered=active;ready=available;if(!ready&&bluetooth)Switch(false);if(!message.empty())error=message;else if(ready)error.clear();}
+void KvmBluetoothStatus(bool active,bool available,const std::string& message){std::lock_guard<std::mutex> lock(mutex);registered=active;ready=available;if(!active)sleeping=false;if(!ready&&bluetooth)Switch(false);if(!message.empty())error=message;else if(ready)error.clear();}
+void KvmBluetoothSleeping(bool value){std::lock_guard<std::mutex> lock(mutex);if(sleeping==value)return;sleeping=value;if(sleeping&&bluetooth)Switch(false);}
 int KvmLedFd(){return ledWake;}
 bool KvmReadLed(uint8_t* report){std::lock_guard<std::mutex> lock(mutex);uint64_t count;while(read(ledWake,&count,sizeof(count))>0){}if(!pendingLed)return false;pendingLed=false;report[0]=1;report[1]=leds[bluetooth?1:0];return true;}
 void KvmHostLed(bool host,uint8_t value){std::lock_guard<std::mutex> lock(mutex);leds[host?1:0]=uint8_t(value&31);if(host==bluetooth)Led();}
