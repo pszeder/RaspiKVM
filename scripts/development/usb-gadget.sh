@@ -7,7 +7,7 @@ g=/sys/kernel/config/usb_gadget/raspikey-dev
 write_descriptor() {
     # configfs replaces the descriptor on each write, rather than appending.
     # Bash printf can split long output: submit all bytes in one system call.
-    python3 - "$1" "$2" <<'PY'
+    python3 - "$2" "$1" <<'PY'
 import os, pathlib, sys
 path, encoded = sys.argv[1:]
 data = bytes.fromhex(encoded.replace('\\x', ''))

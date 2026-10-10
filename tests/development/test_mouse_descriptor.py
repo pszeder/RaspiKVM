@@ -1,5 +1,5 @@
 """Check the actual configfs HID descriptor against the bridge report layouts."""
-import pathlib,re,sys,tempfile,os
+import pathlib,re,sys,tempfile,os,subprocess
 from unittest import mock
 
 script=(pathlib.Path(__file__).resolve().parents[2]/'scripts/development/usb-gadget.sh').read_text()
@@ -15,6 +15,12 @@ with tempfile.TemporaryDirectory() as directory:
         exec(compile(writer,'usb-gadget-descriptor-writer','exec'),{})
         assert write.call_count==1
         assert write.call_args.args[1]==descriptor
+    assert target.read_bytes()==descriptor
+    # Run the real Bash wrapper with the argument order used by the boot script.
+    # The Python writer alone cannot detect a wrapper passing its args backward.
+    function=re.search(r'(write_descriptor\(\) \{.*?\n\})',script,re.S).group(1)
+    target.write_bytes(b'')
+    subprocess.run(['bash','-c',function+'\nwrite_descriptor "$1" "$2"','test',encoded,str(target)],check=True)
     assert target.read_bytes()==descriptor
 size=count=report_id=0
 input_bits={}
