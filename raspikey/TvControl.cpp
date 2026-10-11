@@ -48,7 +48,7 @@ void Error(const std::string& message){std::lock_guard<std::mutex> lock(tvMutex)
 void Dispatch(){
     int pair[2];if(socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,pair)){Error("Could not start TV control channel.");return;}
     int source=memfd_create("raspikey-tv-worker",MFD_CLOEXEC);if(source<0){close(pair[0]);close(pair[1]);Error("Could not load TV worker.");return;}
-    size_t offset=0;while(offset<sizeof(TvWorkerSource)-1){auto count=write(source,TvWorkerSource+offset,sizeof(TvWorkerSource)-1-offset);if(count<=0){close(source);close(pair[0]);close(pair[1]);Error("Could not load TV worker.");return;}offset+=size_t(count);}lseek(source,0,SEEK_SET);
+    size_t offset=0;while(offset<TvWorkerSourceSize){auto count=write(source,TvWorkerSource+offset,TvWorkerSourceSize-offset);if(count<=0){close(source);close(pair[0]);close(pair[1]);Error("Could not load TV worker.");return;}offset+=size_t(count);}lseek(source,0,SEEK_SET);
     posix_spawn_file_actions_t actions;posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions,pair[1],0);posix_spawn_file_actions_adddup2(&actions,pair[1],1);posix_spawn_file_actions_adddup2(&actions,source,3);
     char* args[]={const_cast<char*>("/usr/bin/python3"),const_cast<char*>("-I"),const_cast<char*>("-u"),const_cast<char*>("/proc/self/fd/3"),const_cast<char*>(DATA_DIR),nullptr};

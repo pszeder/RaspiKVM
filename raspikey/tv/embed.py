@@ -13,8 +13,12 @@ os.write(vendor_fd, base64.b64decode(%r))
 sys.path.insert(0, '/proc/self/fd/' + str(vendor_fd))
 ''' % base64.b64encode(wheel).decode('ascii')
 source = bootstrap + (root / 'worker.py').read_text(encoding='utf-8')
-header = 'static const char TvWorkerSource[] = R"TVWORKER(' + source + ')TVWORKER";\n'
+header = '#pragma once\n#include <cstddef>\nextern const char TvWorkerSource[];\nextern const size_t TvWorkerSourceSize;\n'
+cpp = '#include <cstddef>\nextern const char TvWorkerSource[] = R"TVWORKER(' + source + ')TVWORKER";\nextern const size_t TvWorkerSourceSize = sizeof(TvWorkerSource)-1;\n'
 assert ')TVWORKER"' not in source
 out = pathlib.Path(sys.argv[1])
 if not out.exists() or out.read_text(encoding='utf-8') != header:
     out.write_text(header, encoding='utf-8')
+cpp_out = out.with_suffix('.cpp')
+if not cpp_out.exists() or cpp_out.read_text(encoding='utf-8') != cpp:
+    cpp_out.write_text(cpp, encoding='utf-8')

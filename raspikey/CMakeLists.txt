@@ -17,6 +17,7 @@ if(NOT TV_EMBED_RESULT EQUAL 0)
   message(FATAL_ERROR "Could not embed TV worker")
 endif()
 set_property(SOURCE TvControl.cpp APPEND PROPERTY INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR})
+target_sources(raspikey PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/TvWorkerSource.cpp)
 # GIO headers use the existing GLib include directories. Apply its libraries
 # only: adding mount/blkid include flags to every source invalidates the Zero's
 # complete build cache although only the Bluetooth output needs GIO.

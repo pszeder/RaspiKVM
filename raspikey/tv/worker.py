@@ -125,7 +125,7 @@ class TvWorker:
             except websocket.WebSocketTimeoutException:
                 continue
             self.observe(message)
-            if message.get('id') == wanted:
+            if wanted is None or message.get('id') == wanted:
                 if message.get('type') == 'error':
                     raise RuntimeError('TV rejected the requested command; check pairing and permissions.')
                 return message
@@ -149,12 +149,13 @@ class TvWorker:
             return False
         self.ws = websocket.create_connection('wss://' + host + ':3001/', timeout=3,
                     sslopt={'cert_reqs': ssl.CERT_NONE, 'check_hostname': False},
-                    http_proxy_host=None, http_no_proxy=[host], enable_multithread=False)
+                    http_proxy_host=None, http_no_proxy=[host], suppress_origin=True, enable_multithread=False)
         fingerprint = hashlib.sha256(self.ws.sock.getpeercert(binary_form=True)).hexdigest()
         if not pairing and fingerprint != self.secret.get('fingerprint'):
             raise RuntimeError('TV certificate changed. Use Pair TV to approve it again.')
         self.ws.send(json.dumps({'id': 'hello', 'type': 'hello', 'payload': {}}))
-        self.receive('hello')
+        if self.receive(None).get('type') != 'hello':
+            raise RuntimeError('TV sent an unexpected hello response.')
         # webOS 6+ may require system information before registration.
         try:
             self.request('system/getSystemInfo')
@@ -167,14 +168,14 @@ class TvWorker:
         if self.secret.get('host') == host:
             payload['client-key'] = self.secret.get('key', '')
         self.ws.send(json.dumps({'type': 'register', 'id': 'register', 'payload': payload}))
-        reply = self.receive('register')
+        reply = self.receive(None)
         if reply.get('type') == 'response':
             if not pairing:
                 self.blocked = True
                 raise RuntimeError('TV needs approval again. Click Pair TV and accept its prompt.')
             self.status['error'] = 'Accept the RaspiKey connection prompt on the TV.'
             self.publish()
-            reply = self.receive('register', 90)
+            reply = self.receive(None, 90)
         key = reply.get('payload', {}).get('client-key')
         if reply.get('type') != 'registered' or not key:
             raise RuntimeError('TV pairing did not complete.')
