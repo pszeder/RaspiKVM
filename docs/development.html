@@ -1,6 +1,7 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><title>RaspiKey spare Pi setup</title>
+<!doctype html><html lang="en"><meta charset="utf-8"><title>RaspiKVM spare Pi setup</title>
 <style>body{max-width:900px;margin:40px auto;padding:0 24px;font:16px/1.6 system-ui;color:#202832}pre{padding:16px;background:#eef2f5;overflow:auto;white-space:pre-wrap}code{font-family:Consolas,monospace}a{color:#075cab}li{margin:8px 0}table{border-collapse:collapse}td,th{border:1px solid #ccd3da;padding:8px;text-align:left}</style>
-<h1>RaspiKey: build and deploy on the spare Pi</h1>
+<h1>RaspiKVM: build and deploy on the spare Pi</h1>
+<p>The project is now named <strong>RaspiKVM</strong>. Existing checkout paths such as <code>D:\source\RaspiKey</code>, runtime names and local key filenames below are retained intentionally; substitute your own checkout path. The current feature branch is <code>dev/modern-kvm</code>.</p>
 <h2>Everyday development</h2>
 <pre>Set-Location D:\source\RaspiKey
 .\dev.ps1 doctor     # Check identity, permission, services, Bluetooth and USB internet
@@ -62,7 +63,7 @@ curl http://127.0.0.1/info
 journalctl -u raspikey-dev.service -n 60 --no-pager</pre>
 <p>Open <code>http://raspikey-dev.local/</code>, or use the development Pi's IP. Test keyboard behavior using a spare keyboard or a planned A1314 handover.</p>
 <h2>6. Updates and rollback</h2>
-<p>Run <code>.\dev.ps1 update</code> in the configured checkout. Updates install a versioned release, restart only RaspiKey, check its expected HTTP release identity, and restore the previous release and service configuration on activation failure. The native build runs as raspidev, retains object-file caches and skips temporary swap when native source is unchanged. Manual rollback is password-free:</p>
+<p>Run <code>.\dev.ps1 update</code> in the configured checkout. Updates install a versioned release, restart only RaspiKVM, check its expected HTTP release identity, and restore the previous release and service configuration on activation failure. The native build runs as raspidev, retains object-file caches and skips temporary swap when native source is unchanged. Manual rollback is password-free:</p>
 <pre>.\dev.ps1 rollback</pre>
 <p>Application settings persist in <code>/var/lib/raspikey</code>; Bluetooth uses its normal BlueZ state directory. Updates preserve both. USB descriptors, kernel and Bluetooth-stack changes are separate maintenance work. Ordinary application updates do not reflash the SD card or recreate USB networking.</p>
 <p>The development OS is writable: use <code>.\dev.ps1 poweroff</code> before unplugging it. Everyday-use read-only storage and a complete generated image remain later milestones.</p>
