@@ -42,6 +42,10 @@
     </md-content>
 
     <md-content class="md-elevation-1">
+      <TvSettings v-if="connected"/>
+    </md-content>
+
+    <md-content class="md-elevation-1">
       
       <div class="md-headline"><md-icon>devices</md-icon> Keyboards and mice</div>
       <div class="md-caption">Pair a Bluetooth keyboard or mouse. Customize MX Master 3S scrolling and button shortcuts in its device card.</div>
@@ -75,6 +79,7 @@
   import DeviceCard from './components/DeviceCard.vue'
   import ModalDialog from './components/ModalDialog.vue'
   import KvmSettings from './components/KvmSettings.vue'
+  import TvSettings from './components/TvSettings.vue'
   import ApiService from './api-service'
   import Util from './util'
   import FileSaver from 'file-saver';  
@@ -84,7 +89,7 @@
   export default {
     name: 'app',
     components: {
-      DeviceCard, ModalDialog, KvmSettings
+      DeviceCard, ModalDialog, KvmSettings, TvSettings
     },
     mounted: function () {
       console.log("mounted()");

@@ -11,6 +11,12 @@ bool WakeKvmBluetoothHost(){++wakeRequests;return wakeAccepted;}
 void ForgetKvmBluetoothHost(const char*){}
 bool RequestKvmBluetoothConnection(){++connectionRequests;return true;}
 void PauseKvmBluetoothAdvertising(){}
+void StartTvControl(){}
+void StopTvControl(){}
+void TvHostChanged(bool,bool){}
+void TvInputActivity(bool,const uint8_t*,size_t){}
+std::string GetTvStatus(){return "{}";}
+void UpdateTv(const std::string&){}
 
 int main(){
     int keyboardPipe[2],mousePipe[2];assert(pipe(keyboardPipe)==0&&pipe(mousePipe)==0);

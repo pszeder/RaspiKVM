@@ -11,6 +11,12 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
 file(GLOB SOURCE_LIST CONFIGURE_DEPENDS *.cpp bluetooth/*.cpp gdbus/*.c)
 add_executable(raspikey ${SOURCE_LIST})
+find_program(TV_PYTHON python3 REQUIRED)
+execute_process(COMMAND ${TV_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tv/embed.py ${CMAKE_CURRENT_BINARY_DIR}/TvWorkerSource.h RESULT_VARIABLE TV_EMBED_RESULT)
+if(NOT TV_EMBED_RESULT EQUAL 0)
+  message(FATAL_ERROR "Could not embed TV worker")
+endif()
+set_property(SOURCE TvControl.cpp APPEND PROPERTY INCLUDE_DIRECTORIES ${CMAKE_CURRENT_BINARY_DIR})
 # GIO headers use the existing GLib include directories. Apply its libraries
 # only: adding mount/blkid include flags to every source invalidates the Zero's
 # complete build cache although only the Bluetooth output needs GIO.

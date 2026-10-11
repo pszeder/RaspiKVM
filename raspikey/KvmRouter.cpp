@@ -2,6 +2,7 @@
 #include "KvmBluetooth.h"
 #include "KvmInputState.h"
 #include "KvmPower.h"
+#include "TvControl.h"
 #include "Globals.h"
 #include "json.hpp"
 #include <mutex>
@@ -51,7 +52,7 @@ bool Usb(unsigned source,const uint8_t* report,size_t size){
 }
 void ReleaseUsb(){uint8_t keyboard[9]={1},mouse[9]={1},aux[9]={2},consumer[3]={3},media[2]={2};Usb(0,keyboard,9);Usb(0,media,2);Usb(1,mouse,9);Usb(1,aux,9);Usb(1,consumer,3);}
 void ReleaseBluetooth(){const uint8_t zero[8]={};for(uint8_t id:{1,2,3})SendKvmBluetooth(id,zero,id==3?2:8);}
-void Switch(bool target){
+void Switch(bool target,bool explicitSwitch=false){
     if(!target){connecting=false;PauseKvmBluetoothAdvertising();}
     // Always clear the old host, including when an unavailable-host shortcut
     // is consumed. Held modifiers must not remain down on the USB computer.
@@ -64,12 +65,13 @@ void Switch(bool target){
         return;
     }
     connecting=false;
-    bool selectingBluetooth=target&&!bluetooth;
+    bool selectingBluetooth=target&&!bluetooth,changed=target!=bluetooth;
     if(bluetooth!=target){bluetooth=target;++switches;Led();}error.clear();
     if(bluetooth)ReleaseBluetooth();else ReleaseUsb();
     // Always request wake on selection: a host may wake without Exit Suspend,
     // or its last sleep hint may have been lost during application restart.
     if(selectingBluetooth){RequestKvmBluetoothConnection();if(!WakeKvmBluetoothHost()){Switch(false);error="Could not queue Bluetooth wake. Input returned to USB.";}}
+    if(changed||explicitSwitch)TvHostChanged(bluetooth,explicitSwitch);
 }
 uint16_t Media(uint8_t bits){const uint16_t usages[]={0xb5,0xb6,0xb7,0xcd,0xe2,0xe9,0xea};for(unsigned i=0;i<7;++i)if(bits&(1<<i))return usages[i];return 0;}
 void Validate(const nlohmann::json& config,bool& nextEnabled,uint8_t& nextMods,uint8_t& nextKey,bool& nextReverse){
@@ -87,17 +89,20 @@ void StartKvm(){
     {std::lock_guard<std::mutex> lock(mutex);std::ifstream file(path);if(file.good())try{nlohmann::json config;file>>config;Validate(config,enabled,modifiers,key,reverseBluetoothScroll);hostAddress=Address(config.value("hostAddress",std::string()));}catch(const std::exception&){enabled=false;error="Saved host settings are invalid. Save them again.";}
     for(unsigned i=0;i<2;++i)usb[i]=open(i?"/dev/hidg1":"/dev/hidg0",O_WRONLY|O_NONBLOCK|O_CLOEXEC);
     ReleaseUsb();}
+    StartTvControl();
     StartKvmBluetooth();
 }
 void StopKvm(){
     {std::lock_guard<std::mutex> lock(mutex);ReleaseUsb();if(bluetooth)ReleaseBluetooth();bluetooth=false;connecting=false;}
     StopKvmBluetooth();
+    StopTvControl();
     std::lock_guard<std::mutex> lock(mutex);for(auto& fd:usb){if(fd>=0)close(fd);fd=-1;}
 }
 int KvmForward(bool mouse,const uint8_t* report,size_t size){
     std::lock_guard<std::mutex> lock(mutex);
     if(!report||!size)return 0;
     size=KvmWireSize(mouse,report,size);
+    TvInputActivity(mouse,report,size);
     uint8_t id=0;const uint8_t* payload=report+1;size_t length=size-1;
     std::array<uint8_t,8> keyboard{},pointer{};uint8_t media[2]={};
     if(!mouse&&report[0]==1&&size==9){std::copy_n(payload,8,input.keyboard.begin());id=1;}
@@ -105,7 +110,7 @@ int KvmForward(bool mouse,const uint8_t* report,size_t size){
     else if(mouse&&report[0]==1&&size==9){input.buttons=uint16_t(report[1])|(uint16_t(report[2])<<8);id=2;}
     else if(mouse&&report[0]==2&&size==9){std::copy_n(payload,8,input.auxiliary.begin());id=1;}
     else if(mouse&&report[0]==3&&size==3){input.auxiliaryConsumer=uint16_t(report[1])|(uint16_t(report[2])<<8);id=3;}
-    if(!mouse&&id==1){bool trigger=input.Trigger(modifiers,key);if(enabled&&trigger){Switch(!bluetooth&&!connecting);return int(size);}}
+    if(!mouse&&id==1){bool trigger=input.Trigger(modifiers,key);if(enabled&&trigger){Switch(!bluetooth&&!connecting,true);return int(size);}}
     if(input.Suppressed())return int(size);
     if(!bluetooth)return Usb(mouse?1:0,report,size)?int(size):-1;
     if(!id)return int(size);
@@ -116,13 +121,14 @@ int KvmForward(bool mouse,const uint8_t* report,size_t size){
     return int(size);
 }
 void KvmRelease(bool mouse){std::lock_guard<std::mutex> lock(mutex);if(mouse){input.auxiliary={};input.buttons=0;input.auxiliaryConsumer=0;}else{input.keyboard={};input.consumer=0;input.chordHeld=false;}ReleaseUsb();if(bluetooth)ReleaseBluetooth();input.Switched();}
-std::string GetKvmStatus(){std::lock_guard<std::mutex> lock(mutex);return nlohmann::json{{"settings",Settings()},{"status",{{"activeHost",bluetooth?"bluetooth":"usb"},{"registered",registered},{"ready",ready},{"sleeping",sleeping},{"connecting",connecting},{"pairing",Pairing()},{"pairingSeconds",Pairing()?std::chrono::duration_cast<std::chrono::seconds>(pairing-Clock::now()).count():0},{"hostName",hostName},{"error",error},{"switches",switches}}}}.dump();}
+std::string GetKvmStatus(){nlohmann::json result;{std::lock_guard<std::mutex> lock(mutex);result={{"settings",Settings()},{"status",{{"activeHost",bluetooth?"bluetooth":"usb"},{"registered",registered},{"ready",ready},{"sleeping",sleeping},{"connecting",connecting},{"pairing",Pairing()},{"pairingSeconds",Pairing()?std::chrono::duration_cast<std::chrono::seconds>(pairing-Clock::now()).count():0},{"hostName",hostName},{"error",error},{"switches",switches}}}};}result["tv"]=nlohmann::json::parse(GetTvStatus());return result.dump();}
 std::string UpdateKvm(const std::string& body){
     if(body.size()>2048)throw std::invalid_argument("Host settings are too large.");
+    try{auto request=nlohmann::json::parse(body);auto action=request.at("action").get<std::string>();if(action.size()>=2&&action.substr(0,2)=="tv"){UpdateTv(body);return GetKvmStatus();}}catch(const nlohmann::json::exception&){throw std::invalid_argument("Invalid host settings.");}
     try{auto request=nlohmann::json::parse(body);auto action=request.at("action").get<std::string>();
     {std::lock_guard<std::mutex> lock(mutex);
     if(action=="settings"){bool e,r;uint8_t m,k;Validate(request.at("settings"),e,m,k,r);auto oldEnabled=enabled,oldReverse=reverseBluetoothScroll;auto oldModifiers=modifiers,oldKey=key;enabled=e;modifiers=m;key=k;reverseBluetoothScroll=r;try{Save();}catch(...){enabled=oldEnabled;modifiers=oldModifiers;key=oldKey;reverseBluetoothScroll=oldReverse;throw;}if(!enabled){pairing={};Switch(false);}error.clear();}
-    else if(action=="switch"){auto target=request.at("host").get<std::string>();if(target!="usb"&&target!="bluetooth")throw std::invalid_argument("Choose USB or Bluetooth.");Switch(target=="bluetooth");}
+    else if(action=="switch"){auto target=request.at("host").get<std::string>();if(target!="usb"&&target!="bluetooth")throw std::invalid_argument("Choose USB or Bluetooth.");Switch(target=="bluetooth",true);}
     else if(action=="pair"){if(!enabled)throw std::invalid_argument("Enable Bluetooth output first.");if(!hostAddress.empty())throw std::invalid_argument("Forget the existing output host before pairing another.");pendingAddress.clear();pairing=Clock::now()+std::chrono::seconds(120);error.clear();}
     else if(action=="forget"){Switch(false);auto previous=hostAddress;hostAddress.clear();try{Save();}catch(...){hostAddress=previous;throw;}if(!previous.empty())ForgetKvmBluetoothHost(previous.c_str());pendingAddress.clear();hostName.clear();ready=false;pairing={};}
     else throw std::invalid_argument("Unknown host action.");}
@@ -134,7 +140,7 @@ bool KvmPairingOpen(){std::lock_guard<std::mutex> lock(mutex);return Pairing();}
 std::string KvmHostAddress(){std::lock_guard<std::mutex> lock(mutex);return hostAddress.empty()?pendingAddress:hostAddress;}
 bool KvmAcceptHost(const std::string& raw){auto address=Address(raw);std::lock_guard<std::mutex> lock(mutex);if(!enabled)return false;if(!hostAddress.empty())return address==hostAddress;if(!Pairing())return false;if(!pendingAddress.empty())return address==pendingAddress;pendingAddress=address;return true;}
 void KvmHostSeen(const std::string& raw,const std::string& name,bool connected,bool paired){auto address=Address(raw);std::lock_guard<std::mutex> lock(mutex);if(address!=hostAddress&&address!=pendingAddress)return;hostName=name;if(paired&&hostAddress.empty()&&Pairing()){hostAddress=address;try{Save();pairing={};}catch(const std::exception& ex){error=ex.what();hostAddress.clear();}}if(!connected){ready=false;if(bluetooth)Switch(false);}}
-void KvmBluetoothStatus(bool active,bool available,const std::string& message){std::lock_guard<std::mutex> lock(mutex);registered=active;ready=available;if(!active)sleeping=false;if(!ready&&bluetooth)Switch(false);bool finishingConnection=connecting;if(connecting){if(Clock::now()>=connectDeadline){connecting=false;PauseKvmBluetoothAdvertising();error="Bluetooth host did not become ready. Input remains on USB.";}else if(ready)Switch(true);}if(!message.empty())error=message;else if(ready&&!connecting&&!finishingConnection)error.clear();}
+void KvmBluetoothStatus(bool active,bool available,const std::string& message){std::lock_guard<std::mutex> lock(mutex);registered=active;ready=available;if(!active)sleeping=false;if(!ready&&bluetooth)Switch(false);bool finishingConnection=connecting;if(connecting){if(Clock::now()>=connectDeadline){connecting=false;PauseKvmBluetoothAdvertising();error="Bluetooth host did not become ready. Input remains on USB.";}else if(ready)Switch(true,true);}if(!message.empty())error=message;else if(ready&&!connecting&&!finishingConnection)error.clear();}
 bool KvmBluetoothSelected(){std::lock_guard<std::mutex> lock(mutex);return enabled&&bluetooth;}
 void KvmBluetoothSleeping(bool value){std::lock_guard<std::mutex> lock(mutex);if(sleeping==value)return;sleeping=value;if(sleeping&&bluetooth)Switch(false);}
 int KvmLedFd(){return ledWake;}
