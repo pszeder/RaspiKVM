@@ -127,7 +127,9 @@ class TvWorker:
             self.observe(message)
             if wanted is None or message.get('id') == wanted:
                 if message.get('type') == 'error':
-                    raise RuntimeError('TV rejected the requested command; check pairing and permissions.')
+                    # The SSAP error is a short protocol diagnostic, never a registration key.
+                    detail = str(message.get('error', 'unknown error'))[:160]
+                    raise RuntimeError('TV rejected the requested command: ' + detail)
                 return message
         raise TimeoutError('TV did not answer in time.')
 
