@@ -241,6 +241,7 @@ class TvWorker:
                 self.host = command['host']
                 if self.config.get('enabled') and self.config.get('automaticSwitch'):
                     self.select_pending = True
+                    self.allow_screen_wake = bool(command.get('explicit', False))
                     activity |= command.get('explicit', False)
             elif action == 'pair':
                 self.close()
@@ -261,7 +262,7 @@ class TvWorker:
             self.status['error'] = ''
             return
         if activity and (self.config.get('wakeOnInput') or any(c.get('action') in ('wake', 'sync') or c.get('explicit') for c in commands)):
-            self.allow_screen_wake = True
+            self.allow_screen_wake = self.status['power'] != 'on'
             if self.status['power'] == 'on' and self.ws:
                 pass
             elif self.status['power'] == 'screen-off' and self.ws:
@@ -284,7 +285,7 @@ class TvWorker:
                 return
         if not self.ws:
             return
-        if self.select_pending and (self.status['power'] in ('on', 'unknown') or (self.status['power'] == 'screen-off' and self.allow_screen_wake)):
+        if self.select_pending and (self.status['power'] == 'on' or (self.status['power'] in ('screen-off', 'unknown') and self.allow_screen_wake)):
             self.select_input()
         if now >= self.next_poll:
             self.next_poll = now + 10

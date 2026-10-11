@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 root = pathlib.Path(__file__).resolve().parents[2] / 'raspikey' / 'tv'
 sys.path.insert(0, str(root / 'websocket_client-1.9.0-py3-none-any.whl'))
@@ -63,6 +64,7 @@ class Tests(unittest.TestCase):
             worker.ws = object()
             worker.handle([], True)
             self.assertEqual(worker.wakes, 1)  # active TV needs no wake request
+            self.assertFalse(worker.allow_screen_wake)
             worker.status['power'] = 'off'
             worker.handle([], True)
             self.assertEqual(worker.wakes, 2)
@@ -71,6 +73,19 @@ class Tests(unittest.TestCase):
             self.assertEqual(worker.wakes, 2)
             worker.handle([dict(action='wake')], False)
             self.assertEqual(worker.wakes, 3)  # explicit UI wake still works
+
+    def test_wake_cooldown_and_packet_destinations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = module.TvWorker(directory, module.Inbox(io.StringIO()), lambda _: None)
+            worker.config = dict(host='192.168.1.192', mac='C8:99:B2:A0:3C:B8', wolDestination='192.168.1.255')
+            with mock.patch.object(module.socket, 'socket') as factory:
+                udp = factory.return_value.__enter__.return_value
+                worker.wake()
+                worker.wake()
+                self.assertEqual(worker.status['wakeRequests'], 1)
+                self.assertEqual(udp.sendto.call_count, 2)
+                self.assertEqual({call.args[1] for call in udp.sendto.call_args_list}, {('192.168.1.192', 9), ('192.168.1.255', 9)})
+                self.assertTrue(all(len(call.args[0]) == 102 for call in udp.sendto.call_args_list))
 
     def test_input_coalescing(self):
         inbox = module.Inbox(io.StringIO('{"action":"activity"}\n' * 1000))
