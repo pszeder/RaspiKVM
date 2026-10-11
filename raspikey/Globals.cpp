@@ -5,6 +5,9 @@
 //
 
 #include "Globals.h"
+#ifdef RASPIKEY_MODERN_RUNTIME
+#include "AsyncValueCache.h"
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -86,6 +89,16 @@ namespace Globals
 
 		char pfad[128];
 		snprintf(pfad, 128, "/sys/class/power_supply/hid-%s-battery/capacity", btaddresslower.c_str());
+#ifdef RASPIKEY_MODERN_RUNTIME
+		static AsyncValueCache cache([](const string& path, int& value) {
+			FILE* file = fopen(path.c_str(), "r");
+			if (!file) return false;
+			bool valid = fscanf(file, "%d", &value) == 1;
+			fclose(file);
+			return valid;
+		});
+		return cache.Get(pfad, capacity);
+#else
 		FILE* f = fopen(pfad, "r");
 		if (f == nullptr)
 			return false;
@@ -94,6 +107,7 @@ namespace Globals
 		fclose(f);
 
 		return true;
+#endif
 	}
 
 	bool SetPiLedState(const bool state, const char* led)

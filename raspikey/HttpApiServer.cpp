@@ -11,6 +11,11 @@
 #include "Globals.h"
 #include "Logger.h"
 #include "Main.h"
+#ifdef RASPIKEY_MODERN_RUNTIME
+#include "MouseBridge.h"
+#include "MouseControl.h"
+#include "KvmRouter.h"
+#endif
 
 
 using namespace std;
@@ -29,8 +34,6 @@ HttpApiServer::~HttpApiServer()
 void HttpApiServer::MainThread()
 {
 	m_crowApp.port(80).run();
-
-	m_pMainThread = nullptr;
 }
 
 void HttpApiServer::Start()
@@ -43,6 +46,7 @@ void HttpApiServer::Start()
 
 void HttpApiServer::Stop()
 {
+	if (!m_pMainThread) return;
 	m_crowApp.stop();
 
 	m_pMainThread->join();
@@ -53,6 +57,13 @@ void HttpApiServer::Stop()
 
 void HttpApiServer::BuildRoutes()
 {
+#ifdef RASPIKEY_MODERN_RUNTIME
+    CROW_ROUTE(m_crowApp, "/kvm").methods("GET"_method,"POST"_method)([](const crow::request& req) {
+        try {crow::response result(200,req.method=="GET"_method?GetKvmStatus():UpdateKvm(req.body));result.set_header("Content-Type","application/json");result.set_header("Cache-Control","no-store");return result;}
+        catch(const std::invalid_argument& error){return crow::response(400,error.what());}
+        catch(const std::exception& error){return crow::response(500,error.what());}
+    });
+#endif
 	CROW_ROUTE(m_crowApp, "/") ([](const crow::request& req, crow::response& res)
 	{
 		res.code = 302;
@@ -95,6 +106,10 @@ void HttpApiServer::BuildRoutes()
 
 	CROW_ROUTE(m_crowApp, "/save-data") ([]()
 	{
+#ifdef RASPIKEY_MODERN_RUNTIME
+		sync(); // Persistent writable state; never remount the boot partition.
+		return crow::response(200);
+#else
 		int retval = system(
 			"/bin/mount -o remount,rw /boot &&"\
 			"/bin/tar cpjf " DATA_ARCHIVE " -C /data . &&"\
@@ -104,16 +119,30 @@ void HttpApiServer::BuildRoutes()
 			return crow::response(500, Globals::FormatString("System command failed with exit code %d", retval));
 
 		return crow::response(200);
+#endif
 	});
 
 	CROW_ROUTE(m_crowApp, "/delete-data") ([]()
 	{
+#ifdef RASPIKEY_MODERN_RUNTIME
+		try
+		{
+			for (const auto& device : bluetooth::GetDevices())
+				bluetooth::RemoveDevice(device.Address.c_str());
+		}
+		catch (const exception& ex)
+		{
+			return crow::response(500, ex.what());
+		}
+		int retval = system("/usr/bin/find " DATA_DIR " -maxdepth 1 -type f -delete");
+#else
 		int retval = system(
 			"/bin/mount -o remount,rw /boot &&"\
 			"/bin/rm -f " DATA_ARCHIVE " &&"\
 			"/bin/mount -o remount,ro /boot &&"\
 			"/usr/sbin/service bluetooth stop &&"\
 			"/bin/rm -fr " DATA_DIR "/*");
+#endif
 
 		if (retval)
 			return crow::response(500, Globals::FormatString("System command failed with exit code %d", retval));
@@ -128,6 +157,14 @@ void HttpApiServer::BuildRoutes()
 		nlohmann::json jobj;
 
 		jobj["uptime"] = Globals::FormatString("%ld", Globals::GetUptime());
+#ifdef RASPIKEY_MODERN_RUNTIME
+		jobj["modernRuntime"] = true;
+		string instance;
+		if (Globals::FileReadAllText("/etc/raspikey-dev-id", instance))
+			jobj["instanceId"] = Globals::Trim(instance);
+		string module = Globals::g_szModuleDir;
+		jobj["release"] = module.substr(module.find_last_of('/') + 1);
+#endif
 
 		return crow::response(200, jobj.dump());
 	});
@@ -178,6 +215,36 @@ void HttpApiServer::BuildRoutes()
 		return crow::response(200);
 	});
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+	CROW_ROUTE(m_crowApp, "/mouse/settings").methods("GET"_method,"POST"_method) ([](const crow::request& req)
+	{
+		const char* address=req.url_params.get("v");
+		if(!address)return crow::response(400,"Choose a mouse.");
+		try {
+			bool supported=false;
+			for(const auto& device:bluetooth::GetDevices()) {
+				auto alias=device.Modalias;transform(alias.begin(),alias.end(),alias.begin(),::tolower);
+				if(strcasecmp(device.Address.c_str(),address)==0&&device.Paired&&alias.find("v046dpb034")!=string::npos)supported=true;
+			}
+			if(!supported)return crow::response(404,"Pair an MX Master 3S to customize its buttons.");
+			auto body=req.method=="POST"_method?SetMouseControlSettings(address,req.body):GetMouseControlSettings(address);
+			auto response=crow::response(body);response.set_header("Content-Type","application/json");response.set_header("Cache-Control","no-store");return response;
+		}catch(const std::invalid_argument& error){return crow::response(400,error.what());}
+		catch(const nlohmann::json::exception& error){return crow::response(400,"Choose valid scroll and button settings.");}
+		catch(const std::exception& error){return crow::response(500,error.what());}
+	});
+	CROW_ROUTE(m_crowApp, "/mouse/status") ([]()
+	{
+		auto status = GetMouseBridgeStatus();
+		nlohmann::json result = {{"usbReady", status.usbReady}, {"forwarding", status.connected},
+			{"address", status.address}, {"name", status.name}, {"reports", status.reports},
+			{"lastForwardUs", status.lastForwardUs}, {"maxForwardUs", status.maxForwardUs},
+			{"droppedFrames", status.droppedFrames}};
+		auto response = crow::response(result.dump());
+		response.set_header("Content-Type", "application/json");
+		return response;
+	});
+#endif
 	CROW_ROUTE(m_crowApp, "/bt/devices") ([]()
 	{
 		auto jarray = nlohmann::json::array();
@@ -195,7 +262,7 @@ void HttpApiServer::BuildRoutes()
 			jobj["connected"] = dev.Connected;
 			jobj["trusted"] = dev.Trusted;
 
-			if (dev.Connected)
+			if (dev.Connected && dev.Icon != "input-mouse")
 			{
 				int bcap = 0;
 				if (Globals::GetBtHidBatteryCapacity(dev.Address, bcap))
@@ -218,7 +285,9 @@ void HttpApiServer::BuildRoutes()
 			jarray.push_back(jobj);
 		}
 
-		return jarray.dump();
+		auto response = crow::response(jarray.dump());
+		response.set_header("Content-Type", "application/json");
+		return response;
 	});
 
 	//CROW_ROUTE(m_app, "/bt/power")
@@ -467,8 +536,3 @@ void HttpApiServer::BuildRoutes()
 		}
 	});
 }
-
-
-
-
-

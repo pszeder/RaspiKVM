@@ -1,0 +1,165 @@
+#include "MouseBridge.h"
+#include "MouseReports.h"
+#include "MouseKeys.h"
+#include "MousePerformance.h"
+#include "MouseControl.h"
+#include "MouseKeyboardMerge.h"
+#include "KvmRouter.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <poll.h>
+#include <glob.h>
+#include <cerrno>
+#include <chrono>
+#include <mutex>
+#include <vector>
+
+namespace {
+std::mutex stateMutex;
+MouseBridgeStatus state;
+constexpr size_t KeyWords=(KEY_MAX+8*sizeof(long))/(8*sizeof(long));
+bool Bit(const unsigned long* bits,unsigned bit) {return (bits[bit/(8*sizeof(long))]>>(bit%(8*sizeof(long))))&1;}
+struct Device {int fd=-1; bool dropped=false; bool mxMaster3s=false; bool monotonic=false; bool motion=false; MouseReports mouse;MouseKeys keys;std::array<bool,4> customHeld{};std::array<uint8_t,9> keyboard{{2}};};
+int Button(unsigned code) {switch(code){case BTN_FORWARD:return 0;case BTN_MIDDLE:return 1;case BTN_SIDE:return 2;case BTN_EXTRA:return 3;default:return -1;}}
+void ButtonsResync(Device& device,const unsigned long* held,const std::string& address) {
+    unsigned long filtered[KeyWords];std::copy(held,held+KeyWords,filtered);
+    device.keys.ReleaseShortcuts();device.customHeld.fill(false);
+    if(device.mxMaster3s)for(unsigned code: {BTN_FORWARD,BTN_MIDDLE,BTN_SIDE,BTN_EXTRA}) {
+        unsigned button=unsigned(Button(code));auto action=GetMouseButtonAction(address,button);
+        if(action.action){filtered[code/(8*sizeof(long))]&=~(1UL<<(code%(8*sizeof(long))));device.customHeld[button]=Bit(held,code);if(action.action==1)device.keys.Shortcut(button,action.modifiers,action.key,Bit(held,code));}
+    }
+    device.mouse.Resync(filtered);device.keys.Resync(held);
+    if(device.mxMaster3s)device.keys.TaskSwitch(!GetMouseButtonAction(address,0).action&&Bit(held,BTN_FORWARD));
+}
+uint64_t NowUs(){timespec t{};clock_gettime(CLOCK_MONOTONIC,&t);return uint64_t(t.tv_sec)*1000000+t.tv_nsec/1000;}
+bool Write(int fd,const uint8_t* report,size_t size,const std::atomic<bool>& stopping) {
+    (void)fd;
+    if(stopping)return false;
+    return KvmForward(true,report,size)==int(size);
+}
+void Release(int fd) {
+    // Nonblocking best effort; ExecStopPost also releases all collections.
+    const uint8_t mouse[9]={1},keyboard[9]={2},consumer[3]={3};
+    for(auto report: {std::make_pair(mouse,sizeof(mouse)),std::make_pair(keyboard,sizeof(keyboard)),std::make_pair(consumer,sizeof(consumer))}) {
+        pollfd ready{fd,POLLOUT,0};if(poll(&ready,1,100)>0&&(ready.revents&POLLOUT))write(fd,report.first,report.second);
+    }
+}
+std::vector<Device> Discover(std::string& address,std::string& name) {
+    glob_t paths{};std::vector<Device> devices;
+    if(glob("/dev/input/event*",0,nullptr,&paths)!=0)return devices;
+    // Identify the physical Bluetooth mouse first, then its auxiliary keyboard
+    // nodes by the same unique Bluetooth address. Never grab another keyboard.
+    for(size_t i=0;i<paths.gl_pathc&&address.empty();++i) {
+        int fd=open(paths.gl_pathv[i],O_RDONLY|O_NONBLOCK|O_CLOEXEC);if(fd<0)continue;
+        input_id id{};unsigned long keys[KeyWords]={},rel[(REL_MAX+8*sizeof(long))/(8*sizeof(long))]={};char unique[128]={},label[256]={};
+        ioctl(fd,EVIOCGID,&id);ioctl(fd,EVIOCGBIT(EV_KEY,sizeof(keys)),keys);ioctl(fd,EVIOCGBIT(EV_REL,sizeof(rel)),rel);
+        ioctl(fd,EVIOCGUNIQ(sizeof(unique)),unique);ioctl(fd,EVIOCGNAME(sizeof(label)),label);
+        if(id.bustype==BUS_BLUETOOTH&&Bit(keys,BTN_LEFT)&&Bit(rel,REL_X)&&Bit(rel,REL_Y)&&unique[0]) {address=unique;name=label;}
+        close(fd);
+    }
+    if(!address.empty())for(size_t i=0;i<paths.gl_pathc;++i) {
+        int fd=open(paths.gl_pathv[i],O_RDONLY|O_NONBLOCK|O_CLOEXEC);if(fd<0)continue;
+        input_id id{};char unique[128]={};ioctl(fd,EVIOCGID,&id);ioctl(fd,EVIOCGUNIQ(sizeof(unique)),unique);
+        if(id.bustype!=BUS_BLUETOOTH||address!=unique||ioctl(fd,EVIOCGRAB,1)<0){close(fd);continue;}
+        Device device;device.fd=fd;device.mxMaster3s=id.vendor==0x046d&&id.product==0xb034;
+        int clock=CLOCK_MONOTONIC;device.monotonic=ioctl(fd,EVIOCSCLOCKID,&clock)==0;
+        unsigned long held[KeyWords]={};ioctl(fd,EVIOCGKEY(sizeof(held)),held);ButtonsResync(device,held,address);
+        devices.push_back(device);
+    }
+    globfree(&paths);return devices;
+}
+}
+MouseBridgeStatus GetMouseBridgeStatus() {std::lock_guard<std::mutex> lock(stateMutex);return state;}
+void MouseBridge::Start(){controlWorker=std::thread(RunMouseControl,&stopping);worker=std::thread(&MouseBridge::Run,this);}
+void MouseBridge::Stop(){stopping=true;if(worker.joinable())worker.join();if(controlWorker.joinable())controlWorker.join();}
+void MouseBridge::Run() {
+    MousePerformance performance;
+    while(!stopping) {
+        performance.Tick();
+        int output=open("/dev/hidg1",O_WRONLY|O_NONBLOCK|O_CLOEXEC);
+        {std::lock_guard<std::mutex> lock(stateMutex);state.usbReady=output>=0;state.connected=false;state.address.clear();state.name.clear();}
+        if(output<0){std::this_thread::sleep_for(std::chrono::milliseconds(250));continue;}
+        std::string address,name;auto devices=Discover(address,name);
+        if(devices.empty()){close(output);std::this_thread::sleep_for(std::chrono::milliseconds(250));continue;}
+        {std::lock_guard<std::mutex> lock(stateMutex);state.connected=true;state.address=address;state.name=name;}
+        performance.Connect(address,std::any_of(devices.begin(),devices.end(),[](const Device& d){return d.mxMaster3s;}));
+        bool healthy=true;
+        MouseKeys divertedKeys;std::array<uint8_t,9> divertedReport{{2}};
+        auto keyboardWrite=[&]() {
+            std::vector<std::array<uint8_t,9>> reports;reports.reserve(devices.size()+1);reports.push_back(divertedReport);
+            for(const auto& device:devices)reports.push_back(device.keyboard);
+            auto report=MergeMouseKeyboard(reports);return Write(output,report.data(),report.size(),stopping);
+        };
+        std::vector<pollfd> waiting;waiting.reserve(devices.size());
+        for(const auto& device:devices)waiting.push_back({device.fd,POLLIN,0});
+        const int controlWake=MouseControlEventFd();
+        if(controlWake>=0)waiting.push_back({controlWake,POLLIN,0});
+        while(!stopping&&healthy) {
+            int ready=poll(waiting.data(),waiting.size(),50);
+            if(ready<0&&errno!=EINTR)break;
+            if(controlWake>=0&&(waiting.back().revents&POLLIN)) {
+                uint64_t wake;while(read(controlWake,&wake,sizeof(wake))>0){}
+                MouseShortcutEvent event;
+                while(TakeMouseShortcutEvent(event)&&healthy) {
+                    if(event.source==255)divertedKeys.ReleaseShortcuts();
+                    else divertedKeys.Shortcut(event.source,event.modifiers,event.key,event.pressed);
+                    // Write every edge separately: a fast press/release must not
+                    // collapse into an all-released report in the same poll.
+                    if(divertedKeys.Keyboard(divertedReport))healthy=keyboardWrite();
+                }
+            }
+            for(size_t i=0;i<devices.size()&&healthy;++i) {
+                if(waiting[i].revents&(POLLERR|POLLHUP|POLLNVAL)){healthy=false;break;}
+                if(!(waiting[i].revents&POLLIN))continue;
+                input_event events[64];ssize_t bytes=read(devices[i].fd,events,sizeof(events));
+                if(bytes<=0){if(bytes==0||(errno!=EAGAIN&&errno!=EINTR))healthy=false;continue;}
+                auto& device=devices[i];
+                for(size_t e=0;e<size_t(bytes)/sizeof(input_event)&&healthy;++e) {
+                    auto& event=events[e];
+                    if(event.type==EV_SYN&&event.code==SYN_DROPPED){device.dropped=true;device.motion=false;std::lock_guard<std::mutex> lock(stateMutex);++state.droppedFrames;continue;}
+                    if(device.dropped) {
+                        if(event.type!=EV_SYN||event.code!=SYN_REPORT)continue;
+                        unsigned long held[KeyWords]={};if(ioctl(device.fd,EVIOCGKEY(sizeof(held)),held)<0){healthy=false;break;}
+                        ButtonsResync(device,held,address);
+                        device.dropped=false;
+                    } else {
+                        if(event.type==EV_REL&&(event.code==REL_X||event.code==REL_Y)&&event.value)device.motion=true;
+                        bool consume=false;int button=event.type==EV_KEY?Button(event.code):-1;
+                        if(device.mxMaster3s&&button>=0&&event.value==2)consume=device.customHeld[size_t(button)];
+                        if(device.mxMaster3s&&button>=0&&event.value!=2) {
+                            auto action=GetMouseButtonAction(address,unsigned(button));
+                            if(event.value)device.customHeld[size_t(button)]=action.action!=0;
+                            consume=device.customHeld[size_t(button)];
+                            if(consume){device.keys.Shortcut(unsigned(button),action.modifiers,action.key,event.value&&action.action==1);if(!event.value)device.customHeld[size_t(button)]=false;}
+                        }
+                        if(!consume)device.mouse.Event(event.type,event.code,event.value);
+                        if(event.type==EV_KEY) {
+                            device.keys.Event(event.code,event.value);
+                            if(!consume&&device.mxMaster3s&&event.code==BTN_FORWARD&&event.value!=2)device.keys.TaskSwitch(event.value!=0);
+                        }
+                    }
+                    if(event.type!=EV_SYN||event.code!=SYN_REPORT)continue;
+                    uint64_t before=NowUs();
+                    std::array<uint8_t,9> mouse;std::array<uint8_t,9> keyboard;std::array<uint8_t,3> consumer;
+                    uint64_t count=0;
+                    while(device.mouse.Next(mouse)&&healthy){healthy=Write(output,mouse.data(),mouse.size(),stopping);++count;}
+                    if(device.keys.Keyboard(keyboard)&&healthy){device.keyboard=keyboard;healthy=keyboardWrite();++count;}
+                    if(device.keys.ConsumerReport(consumer)&&healthy){healthy=Write(output,consumer.data(),consumer.size(),stopping);++count;}
+                    if(count&&healthy) {
+                        uint64_t now=NowUs(),stamp=uint64_t(event.input_event_sec)*1000000+event.input_event_usec;
+                        int64_t elapsed=int64_t(now)-int64_t(stamp);
+                        if(device.motion&&device.monotonic)performance.Frame(stamp,before,now);
+                        std::lock_guard<std::mutex> lock(stateMutex);state.reports+=count;
+                        if(device.monotonic&&elapsed>=0){state.lastForwardUs=uint64_t(elapsed);state.maxForwardUs=std::max(state.maxForwardUs,state.lastForwardUs);}
+                    }
+                    device.motion=false;
+                }
+            }
+            performance.Tick();
+        }
+        KvmRelease(true);Release(output);close(output);for(auto& device:devices)close(device.fd);
+        {std::lock_guard<std::mutex> lock(stateMutex);state.connected=false;}
+        performance.Disconnect();
+    }
+}

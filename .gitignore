@@ -1,0 +1,8 @@
+raspikey/build/
+raspikey/ui/node_modules/
+raspikey/ui/dist/
+raspikey/ui/src/.git-version.json
+build/
+dist/
+__pycache__/
+.dev/

@@ -1,0 +1,10 @@
+The isolated TV worker bundles websocket-client 1.9.0, an unmodified wheel.
+https://github.com/websocket-client/websocket-client
+PyPI SHA256: af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef
+License: Apache-2.0. The full license and attribution are included in the wheel
+under websocket_client-1.9.0.dist-info/licenses/.
+
+webOS SSAP endpoint names and registration behavior were checked against
+Home Assistant's aiowebostv implementation:
+https://github.com/home-assistant-libs/aiowebostv
+The RaspiKey worker uses its own minimal registration manifest and control loop.

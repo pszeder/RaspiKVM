@@ -22,6 +22,8 @@
 #include <tuple>
 #include <libgen.h>
 #include <sys/time.h>
+#include <glob.h>
+#include <linux/hidraw.h>
 #include "Globals.h"
 #include "ReportFilter.h"
 #include "A1644.h"
@@ -32,11 +34,19 @@
 #include "GenericReportFilter.h"
 #include "Main.h"
 #include "KeyMapReportFilter.h"
+#ifdef RASPIKEY_MODERN_RUNTIME
+#include "MouseBridge.h"
+#include "KeyboardPerformance.h"
+#include "CpuPerformance.h"
+#include "KvmRouter.h"
+#endif
 
 using namespace std;
+class KeyboardPerformance;
+static int ForwardingLoop(IReportFilter** prps,int hidRawFd,int hidgFd,KeyboardPerformance* performance);
 
 HttpApiServer g_ApiServer;
-bool g_ExitRequested = false;
+volatile sig_atomic_t g_ExitRequested = 0;
 IReportFilter* g_pReportFilters[3] = { nullptr };
 
 int main(int argc, char** argv)
@@ -44,13 +54,15 @@ int main(int argc, char** argv)
 	InfoMsg("RaspiKey");
 
 	// Get RaspiKey binary "working" dir
-	readlink("/proc/self/exe", Globals::g_szModuleDir, sizeof(Globals::g_szModuleDir));
+	const ssize_t moduleLength = readlink("/proc/self/exe", Globals::g_szModuleDir, sizeof(Globals::g_szModuleDir) - 1);
+	if (moduleLength < 0) return -1;
+	Globals::g_szModuleDir[moduleLength] = '\0';
 	dirname(Globals::g_szModuleDir); //strip last component from path
 
 	InfoMsg(Globals::FormatString("System uptime: %lu", Globals::GetUptime()).c_str());	
 
 	struct stat info{};
-	if (!stat(DATA_DIR, &info) == 0 || !S_ISDIR(info.st_mode))
+	if (stat(DATA_DIR, &info) != 0 || !S_ISDIR(info.st_mode))
 	{
 		if (system("mkdir -p " DATA_DIR) != 0)
 		{
@@ -60,6 +72,7 @@ int main(int argc, char** argv)
 	}
 
 	// Restore data directory
+#ifndef RASPIKEY_MODERN_RUNTIME
 	if (stat(DATA_ARCHIVE, &info) == 0)
 	{
 		InfoMsg("Restoring data directory");
@@ -75,13 +88,26 @@ int main(int argc, char** argv)
 		}
 	}
 
+#endif
 	if (!StartServices())
 	{
 		ErrorMsg("StartServices() failed.");
+		StopAllServices();
 		return -1;
 	}
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+	CpuPerformance cpu;
+	StartKvm();
+	MouseBridge mouse;
+	mouse.Start();
+#endif
 	OpenDevicesLoop();
+#ifdef RASPIKEY_MODERN_RUNTIME
+	mouse.Stop();
+	StopKvm();
+#endif
+	StopAllServices();
 
 	return 0;
 }
@@ -90,13 +116,12 @@ void SignalHandler(int signo)
 {
 	if (signo == SIGINT || signo == SIGTERM)
 	{
-		InfoMsg("Termination request received");		
-
-		StopAllServices();
+		// Join threads outside the asynchronous signal handler.
+		g_ExitRequested = 1;
 	}
 	else if (signo == SIGALRM) // Timer
 	{
-		InfoMsg("Timer elapsed signal received");
+		// No asynchronous work needed.
 	}
 }
 
@@ -204,7 +229,14 @@ void OpenDevicesLoop()
 		}		
 
 		// Start forwarding loop with the established devices
-		ForwardingLoop(g_pReportFilters, fds.hidRawFd, fds.hidgFd);
+#ifdef RASPIKEY_MODERN_RUNTIME
+        {
+            KeyboardPerformance performance(fds.inputEventFd);
+            ForwardingLoop(g_pReportFilters, fds.hidRawFd, fds.hidgFd, &performance);
+        }
+#else
+        ForwardingLoop(g_pReportFilters, fds.hidRawFd, fds.hidgFd);
+#endif
 
 		// This is to prevent the frozen "C" key situation if the user presses Ctrl-C in the raspikey process console.
 		if (g_ExitRequested)
@@ -216,6 +248,9 @@ void OpenDevicesLoop()
 		}
 		
 		// Close devices
+#ifdef RASPIKEY_MODERN_RUNTIME
+        KvmRelease(false);
+#endif
 		close(fds.inputEventFd);
 		close(fds.hidRawFd);
 		close(fds.hidgFd);
@@ -236,7 +271,11 @@ void StopAllServices()
 	g_ApiServer.Stop();	
 }
 
-int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
+int ForwardingLoop(IReportFilter** prps,int hidRawFd,int hidgFd)
+{
+    return ForwardingLoop(prps,hidRawFd,hidgFd,nullptr);
+}
+static int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd, KeyboardPerformance* performance)
 {
 	uint8_t buf[16] = { 0 };
 
@@ -246,7 +285,17 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 		FD_ZERO(&fds);
 		FD_SET(hidRawFd, &fds);
 		FD_SET(hidgFd, &fds);
-		const int fdsmax = std::max(hidRawFd, hidgFd);
+        int eventFd=-1;
+#ifdef RASPIKEY_MODERN_RUNTIME
+        if(performance)eventFd=performance->EventFd();
+        if(eventFd>=0)FD_SET(eventFd,&fds);
+        int ledFd=KvmLedFd();
+        if(ledFd>=0)FD_SET(ledFd,&fds);
+#endif
+		int fdsmax = std::max(std::max(hidRawFd, hidgFd),eventFd);
+#ifdef RASPIKEY_MODERN_RUNTIME
+        fdsmax=std::max(fdsmax,ledFd);
+#endif
 
 		struct timeval tv{}; 
 		tv.tv_sec = 1;
@@ -261,16 +310,23 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 			return -1; // Any other error, exit the loop
 		}
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+        if(performance){performance->Drain();performance->Tick();}
+#endif
 		// Direction: hidRawFd -> hidgFd
 		if (FD_ISSET(hidRawFd, &fds))
 		{
 			ssize_t len = read(hidRawFd, buf, sizeof(buf));
-			if (len < 0)
+			if (len <= 0)
 			{
 				ErrorMsg("Error read: %s", strerror(errno));
 				return -1;
 			}
 					
+#ifdef RASPIKEY_MODERN_RUNTIME
+            timespec readClock{};clock_gettime(CLOCK_MONOTONIC,&readClock);
+            uint64_t readAt=uint64_t(readClock.tv_sec)*1000000+readClock.tv_nsec/1000;
+#endif
 			DbgMsg("[in] -> %s", Globals::FormatBuffer(buf, len).c_str());
 
 			// Process input report with each IReportFilter
@@ -283,20 +339,44 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 			{
 				DbgMsg("[in] ~> %s", Globals::FormatBuffer(buf, len).c_str());
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+                timespec filterClock{};clock_gettime(CLOCK_MONOTONIC,&filterClock);
+                uint64_t filteredAt=uint64_t(filterClock.tv_sec)*1000000+filterClock.tv_nsec/1000;
+#endif
+#ifdef RASPIKEY_MODERN_RUNTIME
+                len = KvmForward(false,buf,len);
+#else
 				len = write(hidgFd, buf, len); // Transfer report to hidg device
+#endif
 				if (len < 0)
 				{
 					ErrorMsg("Error write: %s", strerror(errno));
 					return -1;
 				}
+#ifdef RASPIKEY_MODERN_RUNTIME
+                timespec queuedClock{};clock_gettime(CLOCK_MONOTONIC,&queuedClock);
+                if(performance)performance->Report(readAt,filteredAt,uint64_t(queuedClock.tv_sec)*1000000+queuedClock.tv_nsec/1000);
+#endif
 			}
 		}
 
-		// Direction: hidgFd -> hidRawFd
+		// Direction: host LED state -> physical keyboard.
+#ifdef RASPIKEY_MODERN_RUNTIME
+        if(FD_ISSET(hidgFd,&fds)){
+            ssize_t size=read(hidgFd,buf,sizeof(buf));
+            if(size==2&&buf[0]==1)KvmHostLed(false,buf[1]);
+            else if(size<=0)return -1;
+        }
+        if(ledFd>=0&&FD_ISSET(ledFd,&fds)&&KvmReadLed(buf)){
+            size_t size=2;
+            for(int k=0;prps[k]!=nullptr;++k)size=prps[k]->ProcessOutputReport(buf,size);
+            if(size&&write(hidRawFd,buf,size)<0)return -1;
+        }
+#else
 		if (FD_ISSET(hidgFd, &fds))
 		{
 			ssize_t len = read(hidgFd, buf, sizeof(buf));
-			if (len < 0)
+			if (len <= 0)
 			{
 				ErrorMsg("Error read: %s", strerror(errno));
 				return -1;
@@ -321,7 +401,8 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 					return -1;
 				}
 			}
-		}		
+		}
+#endif
 	}
 
 	return 0;
@@ -329,6 +410,62 @@ int ForwardingLoop(IReportFilter** prps, int hidRawFd, int hidgFd)
 
 int OpenKbDevice(DeviceDescriptors& fds)
 {
+#ifdef RASPIKEY_MODERN_RUNTIME
+	// Match the Bluetooth keyboard and hidraw node by their kernel-provided identity.
+	glob_t events{};
+	if (glob("/dev/input/event*", 0, nullptr, &events) != 0) return -1;
+	for (size_t i = 0; i < events.gl_pathc; ++i)
+	{
+		int eventFd = open(events.gl_pathv[i], O_RDWR | O_CLOEXEC);
+		if (eventFd < 0) continue;
+		input_id id{};
+		unsigned long keys[(KEY_MAX / (8 * sizeof(unsigned long))) + 1]{};
+		char unique[256]{};
+		ioctl(eventFd, EVIOCGID, &id);
+		ioctl(eventFd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys);
+		ioctl(eventFd, EVIOCGUNIQ(sizeof(unique)), unique);
+		const bool keyboard = (keys[KEY_A / (8 * sizeof(unsigned long))] &
+			(1UL << (KEY_A % (8 * sizeof(unsigned long))))) != 0;
+		if (id.bustype != BUS_BLUETOOTH || !keyboard || !unique[0])
+		{ close(eventFd); continue; }
+		glob_t rawNodes{};
+		int rawFd = -1;
+		if (glob("/dev/hidraw*", 0, nullptr, &rawNodes) == 0)
+		{
+			for (size_t j = 0; j < rawNodes.gl_pathc; ++j)
+			{
+				int candidate = open(rawNodes.gl_pathv[j], O_RDWR | O_CLOEXEC);
+				if (candidate < 0) continue;
+				hidraw_devinfo rawInfo{};
+				char rawUnique[256]{};
+				ioctl(candidate, HIDIOCGRAWINFO, &rawInfo);
+				ioctl(candidate, HIDIOCGRAWUNIQ(sizeof(rawUnique)), rawUnique);
+				if (rawInfo.bustype == BUS_BLUETOOTH && rawInfo.vendor == id.vendor &&
+					rawInfo.product == id.product && strcasecmp(unique, rawUnique) == 0)
+				{ rawFd = candidate; break; }
+				close(candidate);
+			}
+		}
+		globfree(&rawNodes);
+		if (rawFd < 0 || ioctl(eventFd, EVIOCGRAB, 1) < 0)
+		{ if (rawFd >= 0) close(rawFd); close(eventFd); continue; }
+		char name[256]{}, phys[256]{};
+		ioctl(eventFd, EVIOCGNAME(sizeof(name)), name);
+		ioctl(eventFd, EVIOCGPHYS(sizeof(phys)), phys);
+		fds.inputEventFd = eventFd;
+		fds.hidRawFd = rawFd;
+		fds.inputEventDevName = name;
+		fds.inputEventDevPhys = phys;
+		fds.inputEventDevUniq = unique;
+		fds.vid = id.vendor;
+		fds.pid = id.product;
+		globfree(&events);
+		return 0;
+	}
+	globfree(&events);
+	return -1;
+#else
+
 	fds.inputEventFd = open(EVENT_DEV_PATH, O_RDWR);
 	if (fds.inputEventFd < 0)
 	{
@@ -377,6 +514,7 @@ int OpenKbDevice(DeviceDescriptors& fds)
 	}
 
 	return 0;
+#endif
 }
 
 int OpenHidgDevice(int& hidgFd)
@@ -474,10 +612,4 @@ void SetSettings(const std::string& devId, const std::string& json)
 // Dummy methods to avoid static linking issues with libsystemd.a
 extern "C" int sd_listen_fds(int unset_environment) { return 0;  }
 extern "C" int sd_is_socket(int fd, int family, int type, int listening) { return 0; }
-
-
-
-
-
-
 

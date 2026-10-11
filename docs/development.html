@@ -1,0 +1,87 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>RaspiKVM spare Pi setup</title>
+<style>body{max-width:900px;margin:40px auto;padding:0 24px;font:16px/1.6 system-ui;color:#202832}pre{padding:16px;background:#eef2f5;overflow:auto;white-space:pre-wrap}code{font-family:Consolas,monospace}a{color:#075cab}li{margin:8px 0}table{border-collapse:collapse}td,th{border:1px solid #ccd3da;padding:8px;text-align:left}</style>
+<h1>RaspiKVM: build and deploy on the spare Pi</h1>
+<p>The project is now named <strong>RaspiKVM</strong>. Existing checkout paths such as <code>D:\source\RaspiKey</code>, runtime names and local key filenames below are retained intentionally; substitute your own checkout path. The current feature branch is <code>dev/modern-kvm</code>.</p>
+<h2>Everyday development</h2>
+<pre>Set-Location D:\source\RaspiKey
+.\dev.ps1 doctor     # Check identity, permission, services, Bluetooth and USB internet
+.\dev.ps1 update     # Build, upload, compile changed native objects, activate
+.\dev.ps1 rollback   # Restore the previous release
+.\dev.ps1 logs       # Read the service journal
+.\dev.ps1 ssh        # Open an SSH shell
+.\dev.ps1 reboot     # Reboot only the configured spare
+.\dev.ps1 poweroff   # Shut down the spare before unplugging</pre>
+<p><code>build</code> creates a bundle without deployment; <code>deploy -Bundle PATH</code> installs a selected bundle; <code>restart</code> restarts the application. Routine code/UI updates and rollback authenticate with the SSH key, with no sudo prompt. Updates briefly interrupt the spare's keyboard input while its application restarts; they preserve settings, pairing and USB networking. Open <a href="http://192.168.137.86/html/index.html">the spare control UI</a>.</p>
+<p>The ignored <code>.dev/settings.json</code> stores the Pi UUID, pinned SSH host key, USB MACs and default address. Commands discover its USB DHCP address when possible and verify host key/UUID before changes. If DHCP changes and automatic discovery is ambiguous, pass <code>-Target NEW_IP</code>; the pinned identity checks still apply. The dedicated key is <code>D:\source\RaspiKey\.dev\ssh\id_ed25519</code>, readable only by your Windows account; the adjacent .pub file is the public key for Imager. This local directory is excluded from Git, WSL source copying and deployment bundles. Keep it on this PC.</p>
+<p>The target is your Pi Zero W 1.1. Build, installation and fast updates are one milestone. Keep the working keyboard Pi connected and unchanged; do not pair its A1314 with the spare during setup.</p>
+<h2>1. Flash the spare SD card</h2>
+<p>Use the current <a href="https://www.raspberrypi.com/software/">Raspberry Pi Imager</a>. Select <a href="https://www.raspberrypi.com/software/operating-systems/">Raspberry Pi OS Lite (32-bit), current Trixie</a>. The checked release is 6 October 2026. Use an 8 GB or larger spare card for the OS, build dependencies and temporary swap.</p>
+<table><tr><th>Setting</th><th>Value</th></tr><tr><td>Device</td><td>Raspberry Pi Zero W</td></tr><tr><td>Hostname</td><td>raspikey-dev</td></tr><tr><td>Username</td><td>raspidev</td></tr><tr><td>SSH</td><td>Enabled; public-key authentication</td></tr><tr><td>Public key</td><td>Import/paste the contents of RaspiKey-dev-ssh.pub from the outputs folder</td></tr><tr><td>Wi-Fi</td><td>Leave unconfigured</td></tr><tr><td>Timezone</td><td>Europe/Budapest</td></tr></table>
+<p>The initial native build completed on 10 October 2026. Ethernet 5 was the initial setup adapter; the installed composite gadget is now Ethernet 6 (MAC 02-77-E8-46-AD-01). Ethernet 2 remains the original working Pi. With Windows sharing configured, the spare receives a DHCP address on 192.168.137.0/24. Without sharing, its fallback address is 10.12.194.1. DHCP addresses and adapter names can change.</p><p>The dedicated private key stays on this PC at <code>D:\source\RaspiKey\.dev\ssh\id_ed25519</code>. Only its public key goes into Imager.</p>
+<p>After flashing and verification, leave the card in the reader. Reinsert it if Imager ejects it automatically. Identify the FAT boot partition's drive letter.</p>
+<h2>2. Enable USB networking before first boot</h2>
+<p>Run this in PowerShell, replacing E: with the spare card's boot partition:</p>
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File "D:\source\RaspiKey\scripts\development\Prepare-DevSD.ps1" -BootDrive E:</pre>
+<p>The helper edits cloud-init, preserves user/key settings and saves a backup on that card. It does not format a disk. It refuses unexpected filesystems or credentials. If it reports missing user-data or an unexpected username/hostname, use a current Imager and Trixie image and check the customization settings.</p>
+<p>Eject the card, insert it into the spare Pi, and connect a data-capable micro-USB cable to the port labelled <strong>USB</strong>, closest to HDMI. The PWR IN port carries no data. Allow several minutes for first boot and any automatic reboot. This spare needed a second boot before USB appeared. If no new USB device appears after about ten minutes, let activity settle, then power-cycle only the spare.</p>
+<h2>3. Identify the spare adapter and share internet</h2>
+<pre>Get-NetAdapter | Format-Table ifIndex, Name, InterfaceDescription, MacAddress, Status</pre>
+<p>Compare the adapter list before/after connecting the spare. Leave the original 169.254.1.1 Pi's adapter unchanged. If the new USB Ethernet device is unrecognized, install the <a href="https://github.com/raspberrypi/rpi-usb-gadget/releases">official Raspberry Pi USB RNDIS driver</a>. See the <a href="https://www.raspberrypi.com/news/usb-gadget-mode-in-raspberry-pi-os-ssh-over-usb/">official USB network instructions</a>.</p>
+<ol><li>Run <code>ncpa.cpl</code>.</li><li>Open Properties for the Windows connection providing your internet/LAN access.</li><li>On Sharing, enable “Allow other network users to connect…” and choose the <strong>new spare Pi adapter</strong>.</li><li>Allow approximately a minute for DHCP and the Pi's networking watcher to switch into client mode.</li></ol>
+<p>Windows commonly uses 192.168.137.1 on the shared host adapter; the Pi receives another address on that subnet. Without ICS, the OS's standalone USB network uses Pi address 10.12.194.1. Neither uses the original Pi's address.</p>
+<p>After the composite-gadget reboot, Windows briefly reported an unrecognized USB device, then successfully enumerated networking, keyboard and consumer-control interfaces with no device errors. Check the current device state before reinstalling drivers or changing the SD card. If ICS retains the vanished initial adapter and its API reports 0x80040201, reselect the development adapter in the upstream connection's Sharing tab. On this PC, the upstream is <strong>vEthernet (New Virtual Switch)</strong>; select <strong>Ethernet 6</strong>.</p>
+<p>Network access through USB depends on the PC being awake, connected and sharing its connection. This includes future Home Assistant access. VPN or subnet overlap issues will be diagnosed on the spare link without resetting unrelated adapters.</p>
+<h2>4. Connect and verify network access</h2>
+<pre>$key = "D:\source\RaspiKey\.dev\ssh\id_ed25519"
+ssh -i $key raspidev@raspikey-dev.local</pre>
+<p>If the hostname fails to resolve, use the Pi's IP. Inspect neighbors on the spare adapter; replace 42 with its ifIndex:</p>
+<pre>Get-NetIPAddress -InterfaceIndex 42 -AddressFamily IPv4
+Get-NetNeighbor -InterfaceIndex 42 -AddressFamily IPv4</pre>
+<p>Inside SSH:</p>
+<pre>hostname
+cat /proc/device-tree/model; echo
+dpkg --print-architecture
+cat /etc/os-release
+ip -4 address show usb0
+ip route
+getent hosts deb.debian.org
+curl -I --max-time 15 https://deb.debian.org/
+sudo -v</pre>
+<p>Expected: raspikey-dev, Raspberry Pi Zero W, armhf, Trixie. Sudo asks for the login password during initial setup; enter it locally. The installer establishes the scoped password-free deployment permission described below. Successful DNS and HTTPS checks establish outbound USB internet access.</p>
+<h2>5. Build and install</h2>
+<p>The frontend builds in WSL's Linux filesystem with verified Node 22.13.1 and a pinned npm lockfile. The backend builds natively with the Pi's own compiler/libraries. This avoids ARM cross-toolchain mismatches and installing Node on the Zero W. Native objects are cached for incremental updates.</p>
+<p>WSL Ubuntu dependencies are installed on this PC. On another machine, install git, rsync, curl, xz-utils and ca-certificates first.</p>
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File "D:\source\RaspiKey\scripts\development\Build-DevBundle.ps1"</pre>
+<p>The bundle and checksum appear under D:\source\RaspiKey\dist. A verified source + built-UI bundle is already available locally in D:\source\RaspiKey\dist. It includes no personal keys or precompiled ARM binary.</p>
+<pre>$bundle = Get-ChildItem "D:\source\RaspiKey\dist\raspikey-dev-*.tar.gz" | Where-Object Name -NotMatch 'fault-test' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+&amp; "D:\source\RaspiKey\scripts\development\Deploy-DevBundle.ps1" -Target raspikey-dev.local -IdentityFile $key -Bundle $bundle.FullName -InteractiveSudo</pre>
+<p>The installer verifies hostname, board, architecture and OS. Its first native compile is slow on the original Zero W: it uses one compiler job and temporary swap if needed. It records compiler/library versions and checks the executable's ARMv6 attributes.</p>
+<p>After the first installation, run <code>sudo reboot</code> once. The Pi will expose USB networking plus the original keyboard HID interface. Windows may create a new composite-device adapter; reassign ICS to that new <strong>development</strong> adapter. The original Pi remains unchanged.</p>
+<p>The modern service enables only the Bluetooth radio before starting RaspiKey. Fresh Trixie can leave that radio soft-blocked. Wi-Fi stays disabled; USB provides networking.</p>
+<pre>systemctl status raspikey-dev-usb.service raspikey-dev.service
+curl http://127.0.0.1/info
+journalctl -u raspikey-dev.service -n 60 --no-pager</pre>
+<p>Open <code>http://raspikey-dev.local/</code>, or use the development Pi's IP. Test keyboard behavior using a spare keyboard or a planned A1314 handover.</p>
+<h2>6. Updates and rollback</h2>
+<p>Run <code>.\dev.ps1 update</code> in the configured checkout. Updates install a versioned release, restart only RaspiKVM, check its expected HTTP release identity, and restore the previous release and service configuration on activation failure. The native build runs as raspidev, retains object-file caches and skips temporary swap when native source is unchanged. Manual rollback is password-free:</p>
+<pre>.\dev.ps1 rollback</pre>
+<p>Application settings persist in <code>/var/lib/raspikey</code>; Bluetooth uses its normal BlueZ state directory. Updates preserve both. USB descriptors, kernel and Bluetooth-stack changes are separate maintenance work. Ordinary application updates do not reflash the SD card or recreate USB networking.</p>
+<p>The development OS is writable: use <code>.\dev.ps1 poweroff</code> before unplugging it. Everyday-use read-only storage and a complete generated image remain later milestones.</p>
+<h2>7. Deployment permissions and maintenance</h2>
+<p>The installed root-owned command is <code>/usr/local/libexec/raspikey/deploy-control.sh</code>. A visudo-validated rule in <code>/etc/sudoers.d/raspikey-dev-deploy</code> permits raspidev to invoke that fixed entry point without a password. It checks the Pi/account identity, limits operations, snapshots uploads into a private root directory, verifies archive/manifest checksums, rejects links/path escapes, and serializes changes. Application configuration continues through the web UI and persistent state directory.</p>
+<p>Normal deployment uses the installed privileged framework. Uploaded shell helpers and systemd units are not executed or substituted. The developer's application code compiles as raspidev; the resulting program runs with the privileges needed by the current HID/BlueZ implementation. Changes to deployment tools, system services, USB gadget or OS packages are maintenance work and use the explicit setup workflow with its occasional sudo prompt:</p>
+<pre>.\dev.ps1 build
+.\dev.ps1 setup</pre>
+<p>A warning about differing privileged tooling means the application deployed using the already installed framework; use setup when intending to update that framework. The interactive path is also used once on a freshly flashed card. After that card exposes the composite gadget, configure its local profile using the verified SSH key/known-hosts file and its identified host-adapter MAC:</p>
+<pre>&amp; .\scripts\development\Configure-DevHost.ps1 -Target PI_ADDRESS -IdentityFile KEY_PATH -KnownHostsFile VERIFIED_HOSTS_PATH -HostMac HOST_ADAPTER_MAC
+.\dev.ps1 doctor</pre>
+<p>The profile is tied to this spare; a replacement Pi needs its own verified profile. Do not commit or publish .dev.</p>
+<h2>Native debugging and tests</h2>
+<p>The Pi's incremental source/build caches are <code>/var/cache/raspikey-build/source</code> and <code>/var/cache/raspikey-build/build</code>, owned by raspidev. Compiler/package versions and binary hashes are captured in each release's <code>build-info.txt</code>. The active release is <code>/opt/raspikey/current</code>; retained releases allow rollback. C++ changes build on the Pi; UI changes build in WSL. Initial compilation can take many minutes on a Zero W; later builds compile only changed objects. Restore a good bundle with <code>.\dev.ps1 deploy</code> after a failed experiment.</p>
+<pre>wsl -d Ubuntu -- bash -lc 'python3 /mnt/d/source/RaspiKey/tests/development/test_upload.py'
+wsl -d Ubuntu -- bash -lc 'g++ -std=c++14 -pthread /mnt/d/source/RaspiKey/tests/development/test_async_value_cache.cpp -o /tmp/raspikey-cache-test &amp;&amp; /tmp/raspikey-cache-test'</pre>
+<p>On the modern runtime, Bluetooth battery reads run in a background cache refreshed at most once per minute. A slow keyboard/kernel response cannot block the web UI; the latest valid value is retained and initially unavailable values are omitted. The original legacy runtime path is preserved.</p>
+<h2>Validation boundary</h2>
+<p>Verified on the spare: native ARMv6 build with Trixie GCC 14.2/Boost 1.83; service startup after reboot; USB network/keyboard/consumer-control enumeration; SSH and web/API access; DNS and HTTPS through Windows ICS on the final Ethernet 6 adapter; Bluetooth power-on; incremental native update, manual rollback and restoration of the latest release. The unchanged native source reported <code>ninja: no work to do</code> on both update passes. The user confirmed successful typing through a spare A1314. BlueZ reports that keyboard paired, trusted and connected; its Linux devices are event2 and hidraw0, vendor/product 05AC:0256. The original keyboard Pi has not been modified.</p>
+<p>SSH-key-only update, rollback and restoration passed after clearing sudo's credential cache; ordinary sudo still required a password. An intentionally failing application was rejected and the previous release automatically restored, then a good deployment cleared the failed build from the native cache. Reboot restored the same USB adapter identity, DHCP address, SSH access and outbound HTTPS without changing Windows sharing. The A1314 pairing/trust remained saved; press a key to wake/reconnect it after reboot. Windows PowerShell 5.1 and PowerShell 7 run the doctor command. Archive tests cover traversal, checksum failures, links, duplicate/uncovered files, private-directory checks and ownership. A blocking fake battery reader verified responsive cached reads and single-query behavior; the real device API responded in about 60 ms after the fix. Exhaustive modifier/media-key behavior remains a later functional test. A full generated disk image remains optional; the supported setup path is a stock Trixie Lite image plus these scripts.</p>
+</html>

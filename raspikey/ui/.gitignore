@@ -2,7 +2,6 @@
 node_modules
 /dist
 yarn.lock
-package-lock.json
 .git-version.json
 
 # local env files

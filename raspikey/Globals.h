@@ -23,7 +23,11 @@
 #define HIDG_DEV_PATH "/dev/hidg0"
 
 #define LOG_FILE_PATH "/tmp/raspikey.log"
+#ifdef RASPIKEY_MODERN_RUNTIME
+#define DATA_DIR "/var/lib/raspikey"
+#else
 #define DATA_DIR "/data"
+#endif
 #define DATA_ARCHIVE "/boot/data.tar.bz2"
 //
 //

@@ -340,13 +340,10 @@ namespace bluetooth
 	{
 		InfoMsg("OnPairDeviceReply()");
 
-		{
-			lock_guard<mutex> guard(g_mutex);
-
-			if (!g_bIsPairing)
-				return;
-			g_bIsPairing = false;
-		}
+		lock_guard<mutex> guard(g_mutex);
+		if (!g_bIsPairing)
+			return;
+		g_bIsPairing = false;
 
 		DBusError error;
 		dbus_error_init(&error);
@@ -370,6 +367,23 @@ namespace bluetooth
 		}
 	}
 
+	ReplyMessage WaitPairReply(int attempts)
+	{
+		for (int count = 0; count < attempts; ++count)
+		{
+			{
+				lock_guard<mutex> guard(g_mutex);
+				if (g_bHasPairingReplyMessage || !g_bIsPairing)
+				{
+					g_bHasPairingReplyMessage = false;
+					return g_pairingReplyMessage;
+				}
+			}
+			usleep(100 * 1000);
+		}
+		return ReplyMessage(ReplyMessageStatus::Fail, "Pairing operation Timed-out");
+	}
+
 	ReplyMessage BeginPairDevice(const char* address)
 	{	
 		InfoMsg("BeginPairDevice()");
@@ -379,7 +393,6 @@ namespace bluetooth
 
 			if (g_bIsPairing)
 				ThrowRuntimeError("Already pairing with a device");
-			g_bIsPairing = true;
 		}
 
 		if (!address || !strlen(address))
@@ -392,30 +405,31 @@ namespace bluetooth
 		if (!proxy)
 			ThrowRuntimeError("Device not available");
 
-		g_bHasPairingReplyMessage = false;
+		{
+			lock_guard<mutex> guard(g_mutex);
+			if (g_bIsPairing)
+				ThrowRuntimeError("Already pairing with a device");
+			g_bIsPairing = true;
+			g_bHasPairingReplyMessage = false;
+			g_pairingReplyMessage = ReplyMessage(ReplyMessageStatus::Fail, "Pairing not complete");
+		}
 
 		if (g_dbus_proxy_method_call(proxy, "Pair", NULL, OnPairDeviceReply, NULL, NULL) == FALSE)
+		{
+			lock_guard<mutex> guard(g_mutex);
+			g_bIsPairing = false;
 			ThrowRuntimeError("Failed to pair");
+		}
 
 		InfoMsg("Started pairing with %s, now waiting for agent notification.", address);
 
-		int count = 0;
-		while (!g_bHasPairingReplyMessage && ++count < 100) // Wait 10 sec for agent reply
-			usleep(100 * 1000); // 100msec
-
-		if (g_bHasPairingReplyMessage)
-		{
-			g_bHasPairingReplyMessage = false;
-			return g_pairingReplyMessage;
-		}
-
-		g_bHasPairingReplyMessage = false;
-		return ReplyMessage(ReplyMessageStatus::Fail, "Pairing operation Timed-out");
+		return WaitPairReply(100);
 	}
 	
 	void OnAgentNotify(const string& data)
 	{
 		InfoMsg("OnAgentNotify()");
+		lock_guard<mutex> guard(g_mutex);
 
 		if (!g_bIsPairing)
 			return;
@@ -431,18 +445,9 @@ namespace bluetooth
 	ReplyMessage EndPairDevice()
 	{
 		InfoMsg("EndPairDevice()");
-
-		ReplyMessage msg;
-		int count = 0;
-
-		while (!g_bHasPairingReplyMessage && ++count < 300) // 30sec in total
-			usleep(100 * 1000); // 100msec
-		if (g_bHasPairingReplyMessage)
-			return g_pairingReplyMessage;
-
-		return ReplyMessage(ReplyMessageStatus::Fail, "Pairing operation Timed-out");
-
-		//return ReplyMessage(ReplyMessageStatus::Success, "Success");
+		// Just Works mice may finish in BeginPairDevice without an agent PIN
+		// round trip. Do not wait for an already consumed completion callback.
+		return WaitPairReply(300);
 	}
 
 	void TrustDevice(const char* address)

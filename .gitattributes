@@ -1,0 +1,7 @@
+scripts/development/*.sh text eol=lf
+scripts/development/*.service text eol=lf
+scripts/development/*.py text eol=lf
+scripts/development/*.cjs text eol=lf
+scripts/development/*.ps1 text eol=crlf
+raspikey/ui/package-lock.json text eol=lf
+raspikey/Globals.h whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
