@@ -163,9 +163,9 @@ class TvWorker:
             self.request('system/getSystemInfo')
         except RuntimeError:
             pass
-        payload = {'forcePairing': False, 'pairingType': 'PROMPT', 'manifest': {
+        payload = {'forcePairing': pairing, 'pairingType': 'PROMPT', 'manifest': {
             'manifestVersion': 1, 'appVersion': '1.0',
-            'permissions': ['CONTROL_INPUT_TV', 'READ_INPUT_DEVICE_LIST', 'READ_POWER_STATE',
+            'permissions': ['CONTROL_INPUT_TV', 'CONTROL_DISPLAY', 'LAUNCH', 'READ_INPUT_DEVICE_LIST', 'READ_POWER_STATE',
                             'READ_RUNNING_APPS', 'CONTROL_POWER', 'CONTROL_TV_SCREEN']}}
         if self.secret.get('host') == host:
             payload['client-key'] = self.secret.get('key', '')
