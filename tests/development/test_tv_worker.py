@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import pathlib
 import sys
 import tempfile
@@ -31,6 +32,24 @@ class FakeWorker(module.TvWorker):
 
 
 class Tests(unittest.TestCase):
+    def test_pairing_manifest_and_quiet_reconnect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = FakeWorker(directory)
+            worker.config = dict(host='192.168.1.192', usbInput='HDMI_4', bluetoothInput='HDMI_3')
+            ws = mock.Mock()
+            ws.sock.getpeercert.return_value = b'test TV certificate'
+            for pairing in (True, False):
+                ws.reset_mock()
+                worker.receive = mock.Mock(side_effect=[{'type': 'hello'},
+                    {'type': 'registered', 'payload': {'client-key': 'test-key'}}])
+                with mock.patch.object(module.websocket, 'create_connection', return_value=ws) as connect:
+                    self.assertTrue(worker.connect(pairing))
+                manifest = json.loads(ws.send.call_args_list[-1].args[0])['payload']
+                self.assertEqual(manifest['forcePairing'], pairing)
+                self.assertTrue({'CONTROL_INPUT_TV', 'CONTROL_DISPLAY', 'LAUNCH'} <= set(manifest['manifest']['permissions']))
+                self.assertTrue(connect.call_args.kwargs['suppress_origin'])
+                self.assertEqual(worker.wakes, 0)
+
     def test_magic_packet(self):
         packet = module.magic_packet('C8:99:B2:A0:3C:B8')
         self.assertEqual(len(packet), 102)
