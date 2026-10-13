@@ -59,6 +59,10 @@ int main(){
         assert(Until([&]{return !server.peerRefreshPending;}));assert(!server.connected); // stale reply cannot resurrect a lost link
         server.RefreshPeer();assert(Until([&]{return pending!=nullptr;}));Reply(pending);pending=nullptr;
         assert(Until([&]{return !server.peerRefreshPending;}));assert(server.connected&&server.paired);
+        server.RefreshPeer();assert(Until([&]{return pending!=nullptr;}));
+        stopping=true;g_cancellable_cancel(server.peerCancel);
+        assert(Until([&]{return !server.peerRefreshPending;}));assert(server.connected); // shutdown cancellation emits no spurious disconnect
+        stopping=false;Reply(pending);pending=nullptr;
         g_dbus_connection_signal_unsubscribe(listener,subscription);g_dbus_connection_close_sync(listener,nullptr,nullptr);g_object_unref(listener);
         g_dbus_connection_unregister_object(bluez,registration);g_dbus_node_info_unref(info);g_dbus_connection_close_sync(bluez,nullptr,nullptr);g_object_unref(bluez);
     }
