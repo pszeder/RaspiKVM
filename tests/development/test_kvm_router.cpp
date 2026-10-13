@@ -7,6 +7,7 @@ namespace {unsigned wakeRequests=0,connectionRequests=0,bluetoothReports=0;bool 
 void StartKvmBluetooth(){}
 void StopKvmBluetooth(){}
 bool SendKvmBluetooth(uint8_t,const uint8_t*,size_t){++bluetoothReports;return true;}
+std::string GetKvmBluetoothDiagnostics(){return "{}";}
 bool WakeKvmBluetoothHost(){++wakeRequests;return wakeAccepted;}
 void ForgetKvmBluetoothHost(const char*){}
 bool RequestKvmBluetoothConnection(){++connectionRequests;return true;}

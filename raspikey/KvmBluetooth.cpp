@@ -16,6 +16,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <cstdio>
+#include <chrono>
+#include <sstream>
 
 namespace {
 const char* Root="/org/raspikey/kvm";
@@ -26,8 +28,11 @@ std::atomic<bool> advertisementRequested{false};
 std::atomic<bool> advertisementChanged{false};
 std::thread worker;
 std::mutex queueMutex;
-struct Report{uint8_t id;std::vector<uint8_t> bytes;};
+struct Report{uint8_t id;std::vector<uint8_t> bytes;int64_t queuedAt=0;};
 std::deque<Report> queue;
+std::atomic<unsigned> queuedReports{0},keyboardNotifications{0},unchangedKeyboardNotifications{0},maxQueueDelayUs{0},maxControlCallUs{0};
+int64_t ClockUs(){return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
+void Maximum(std::atomic<unsigned>& counter,int64_t value){unsigned next=unsigned(std::min<int64_t>(value,UINT32_MAX)),previous=counter.load();while(next>previous&&!counter.compare_exchange_weak(previous,next)){};}
 std::string forgetHost;
 int wake=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
 const uint8_t Map[]={
@@ -80,7 +85,7 @@ public:
     bool application=false,advertisement=false,agent=false,discoverable=false,paired=false,connected=false;
     uint8_t protocol=1;bool suspended=false,bondRequested=false;
     std::string observedHost;
-    GVariant* Call(const char* path,const char* interface,const char* method,GVariant* args){GError* error=nullptr;auto result=g_dbus_connection_call_sync(bus,"org.bluez",path,interface,method,args,nullptr,G_DBUS_CALL_FLAGS_NONE,3000,nullptr,&error);if(!result){std::string message=error?error->message:"Bluetooth call failed";g_clear_error(&error);throw std::runtime_error(message);}return result;}
+    GVariant* Call(const char* path,const char* interface,const char* method,GVariant* args){GError* error=nullptr;auto started=ClockUs();auto result=g_dbus_connection_call_sync(bus,"org.bluez",path,interface,method,args,nullptr,G_DBUS_CALL_FLAGS_NONE,3000,nullptr,&error);Maximum(maxControlCallUs,ClockUs()-started);if(!result){std::string message=error?error->message:"Bluetooth call failed";g_clear_error(&error);throw std::runtime_error(message);}return result;}
     void Command(const char* path,const char* interface,const char* method,GVariant* args){auto result=Call(path,interface,method,args);g_variant_unref(result);}
     static void Method(GDBusConnection*,const gchar*,const gchar* path,const gchar* interface,const gchar* method,GVariant* args,GDBusMethodInvocation* invocation,gpointer data){try{static_cast<Server*>(data)->Dispatch(path,interface,method,args,invocation);}catch(const std::exception& ex){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.Failed",ex.what());}}
     static GVariant* Property(GDBusConnection*,const gchar*,const gchar* path,const gchar*,const gchar* property,GError**,gpointer data){return static_cast<Server*>(data)->PropertyValue(path,property);}
@@ -238,12 +243,17 @@ public:
         if(advertisementChanged.exchange(false)&&!stopping)Tick();
     }
     void Deliver(const Report& report){
+        if(report.queuedAt)Maximum(maxQueueDelayUs,ClockUs()-report.queuedAt);
         for(auto& node:nodes)if(node->report==report.id){
+            bool unchanged=node->value==report.bytes;
             if(node->boot&&report.id==2){if(report.bytes.size()<6)continue;int16_t x=int16_t(uint16_t(report.bytes[2])|(uint16_t(report.bytes[3])<<8)),y=int16_t(uint16_t(report.bytes[4])|(uint16_t(report.bytes[5])<<8));node->value={uint8_t(report.bytes[0]&7),uint8_t(std::max(-127,std::min(127,int(x)))),uint8_t(std::max(-127,std::min(127,int(y))))};}
             else node->value=report.bytes;
             // Cache releases even while disconnected, so the next ReadValue
             // cannot return a stale held key or button.
-            if(!suspended&&ReportEnabled(*node))Changed(*node,"Value",Bytes(node->value));
+            if(!suspended&&ReportEnabled(*node)){
+                if(report.id==1){++keyboardNotifications;if(unchanged)++unchangedKeyboardNotifications;}
+                Changed(*node,"Value",Bytes(node->value));
+            }
         }
     }
     void WakeHost(){
@@ -291,7 +301,8 @@ public:
 }
 void StartKvmBluetooth(){if(worker.joinable())return;stopping=false;advertisementRequested=false;advertisementChanged=false;worker=std::thread([]{while(!stopping){try{Server server;server.Run();}catch(const std::exception& ex){KvmBluetoothStatus(false,false,ex.what());for(unsigned i=0;i<20&&!stopping;++i)std::this_thread::sleep_for(std::chrono::milliseconds(100));}}});}
 void StopKvmBluetooth(){stopping=true;uint64_t one=1;write(wake,&one,sizeof(one));if(worker.joinable())worker.join();std::lock_guard<std::mutex> lock(queueMutex);queue.clear();}
-bool SendKvmBluetooth(uint8_t id,const uint8_t* data,size_t size){if(stopping||wake<0)return false;std::lock_guard<std::mutex> lock(queueMutex);if(queue.size()>=256){queue.clear();const uint8_t zero[8]={};for(uint8_t report:{1,2,3})queue.push_back({report,{zero,zero+(report==3?2:8)}});uint64_t one=1;write(wake,&one,sizeof(one));return false;}queue.push_back({id,{data,data+size}});uint64_t one=1;write(wake,&one,sizeof(one));return true;}
+bool SendKvmBluetooth(uint8_t id,const uint8_t* data,size_t size){if(stopping||wake<0)return false;std::lock_guard<std::mutex> lock(queueMutex);if(queue.size()>=256){queue.clear();const uint8_t zero[8]={};for(uint8_t report:{1,2,3})queue.push_back({report,{zero,zero+(report==3?2:8)}});uint64_t one=1;write(wake,&one,sizeof(one));return false;}queue.push_back({id,{data,data+size},ClockUs()});++queuedReports;uint64_t one=1;write(wake,&one,sizeof(one));return true;}
+std::string GetKvmBluetoothDiagnostics(){std::ostringstream out;out<<"{\"queuedReports\":"<<queuedReports.load()<<",\"keyboardNotifications\":"<<keyboardNotifications.load()<<",\"unchangedKeyboardNotifications\":"<<unchangedKeyboardNotifications.load()<<",\"maxQueueDelayUs\":"<<maxQueueDelayUs.load()<<",\"maxControlCallUs\":"<<maxControlCallUs.load()<<"}";return out.str();}
 bool WakeKvmBluetoothHost(){const uint8_t zero=0;return SendKvmBluetooth(0,&zero,0);}
 bool RequestKvmBluetoothConnection(){if(stopping||wake<0)return false;advertisementRequested=true;advertisementChanged=true;uint64_t one=1;return write(wake,&one,sizeof(one))==sizeof(one);}
 void PauseKvmBluetoothAdvertising(){advertisementRequested=false;advertisementChanged=true;uint64_t one=1;if(wake>=0)write(wake,&one,sizeof(one));}
