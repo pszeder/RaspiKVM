@@ -4,6 +4,8 @@
 #include <gio/gio.h>
 #include <glib-unix.h>
 #include <sys/eventfd.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <atomic>
 #include <thread>
@@ -85,6 +87,10 @@ public:
     bool application=false,advertisement=false,agent=false,discoverable=false,paired=false,connected=false;
     uint8_t protocol=1;bool suspended=false,bondRequested=false;
     std::string observedHost;
+    bool peerRefreshPending=false;
+    GCancellable* peerCancel=g_cancellable_new();
+    uint64_t peerGeneration=0;
+    std::shared_ptr<int> lifetime=std::make_shared<int>(0);
     GVariant* Call(const char* path,const char* interface,const char* method,GVariant* args){GError* error=nullptr;auto started=ClockUs();auto result=g_dbus_connection_call_sync(bus,"org.bluez",path,interface,method,args,nullptr,G_DBUS_CALL_FLAGS_NONE,3000,nullptr,&error);Maximum(maxControlCallUs,ClockUs()-started);if(!result){std::string message=error?error->message:"Bluetooth call failed";g_clear_error(&error);throw std::runtime_error(message);}return result;}
     void Command(const char* path,const char* interface,const char* method,GVariant* args){auto result=Call(path,interface,method,args);g_variant_unref(result);}
     static void Method(GDBusConnection*,const gchar*,const gchar* path,const gchar* interface,const gchar* method,GVariant* args,GDBusMethodInvocation* invocation,gpointer data){try{static_cast<Server*>(data)->Dispatch(path,interface,method,args,invocation);}catch(const std::exception& ex){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.Failed",ex.what());}}
@@ -121,12 +127,13 @@ public:
     }
     void Changed(Node& node,const char* property,GVariant* value){GVariantBuilder changes;g_variant_builder_init(&changes,G_VARIANT_TYPE("a{sv}"));g_variant_builder_add(&changes,"{sv}",property,value);g_dbus_connection_emit_signal(bus,nullptr,node.path.c_str(),Properties,"PropertiesChanged",g_variant_new("(s@a{sv}@as)",node.interface.c_str(),g_variant_builder_end(&changes),g_variant_new_strv(nullptr,0)),nullptr);}
     void LinkClosed(){
+        ++peerGeneration;
         connected=false;bondRequested=false;SetSuspend(false);protocol=1;
         for(auto& node:nodes)if(node->uuid=="2a4c"||node->uuid=="2a4e")node->value={1};
     }
-    void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;LinkClosed();return;}observedHost=address;
-        try{auto response=Call(HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);g_variant_unref(response);
-        }catch(const std::exception&){connected=false;paired=false;KvmHostSeen(address,"",false,false);}
+    void ApplyPeer(const std::string& address,GVariant* response){
+        if(response){GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);
+        }else{connected=false;paired=false;KvmHostSeen(address,"",false,false);}
         // BlueZ retains bonded peers' CCC configuration across disconnects.
         // Notification state belongs to StartNotify/StopNotify, not this link.
         // Suspend and protocol mode describe this connection, not the bond.
@@ -140,6 +147,27 @@ public:
             g_dbus_connection_call(bus,"org.bluez",HostPath(address).c_str(),"org.bluez.Device1","Pair",nullptr,nullptr,G_DBUS_CALL_FLAGS_NONE,60000,nullptr,
                 [](GObject* object,GAsyncResult* result,gpointer data){auto* self=static_cast<Server*>(data);GError* error=nullptr;auto reply=g_dbus_connection_call_finish(G_DBUS_CONNECTION(object),result,&error);if(!reply){fprintf(stderr,"KVM: output-host bond failed: %s\n",error->message);KvmBluetoothStatus(self->application,false,error->message);g_error_free(error);}else{g_variant_unref(reply);self->RefreshPeer();self->Status();}},this);
         }
+    }
+    void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;LinkClosed();return;}
+        if(peerRefreshPending)return;
+        observedHost=address;peerRefreshPending=true;
+        struct Pending{Server* server;std::weak_ptr<int> lifetime;std::string address;uint64_t generation;};
+        auto* pending=new Pending{this,lifetime,address,peerGeneration};
+        // Status queries share the HID event loop. Never wait for BlueZ here:
+        // a slow control reply must not hold up keyboard release notifications.
+        g_dbus_connection_call(bus,"org.bluez",HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"),G_VARIANT_TYPE("(a{sv})"),G_DBUS_CALL_FLAGS_NONE,3000,peerCancel,
+            [](GObject* object,GAsyncResult* result,gpointer data){
+                std::unique_ptr<Pending> pending(static_cast<Pending*>(data));GError* error=nullptr;
+                auto response=g_dbus_connection_call_finish(G_DBUS_CONNECTION(object),result,&error);
+                if(!pending->lifetime.expired()){
+                    auto* self=pending->server;self->peerRefreshPending=false;
+                    if(!stopping&&pending->generation==self->peerGeneration&&pending->address==KvmHostAddress()){
+                        self->ApplyPeer(pending->address,response);self->Status();
+                    }
+                }
+                if(response)g_variant_unref(response);
+                g_clear_error(&error);
+            },pending);
     }
     // A sleeping host can still accept a deliberate wake request. Keep its
     // transport ready, but route ordinary input to USB until the next selection.
@@ -295,11 +323,14 @@ public:
         auto output=KvmHostAddress();if(!output.empty())try{Command(HostPath(output).c_str(),"org.bluez.Device1","Disconnect",nullptr);}catch(const std::exception& ex){fprintf(stderr,"KVM: close output link: %s\n",ex.what());}
         g_source_destroy(timer);g_source_unref(timer);g_source_destroy(source);g_source_unref(source);
         g_dbus_connection_signal_unsubscribe(bus,peerWatch);g_dbus_connection_signal_unsubscribe(bus,daemonWatch);
+        g_cancellable_cancel(peerCancel);
+        // Dispatch the cancellation before releasing this private context.
+        while(peerRefreshPending)g_main_context_iteration(context,true);
     }
-    ~Server(){if(bus){g_dbus_connection_close_sync(bus,nullptr,nullptr);g_object_unref(bus);}if(info)g_dbus_node_info_unref(info);if(loop)g_main_loop_unref(loop);if(context){g_main_context_pop_thread_default(context);g_main_context_unref(context);}}
+    ~Server(){lifetime.reset();g_cancellable_cancel(peerCancel);g_object_unref(peerCancel);if(bus){g_dbus_connection_close_sync(bus,nullptr,nullptr);g_object_unref(bus);}if(info)g_dbus_node_info_unref(info);if(loop)g_main_loop_unref(loop);if(context){g_main_context_pop_thread_default(context);g_main_context_unref(context);}}
 };
 }
-void StartKvmBluetooth(){if(worker.joinable())return;stopping=false;advertisementRequested=false;advertisementChanged=false;worker=std::thread([]{while(!stopping){try{Server server;server.Run();}catch(const std::exception& ex){KvmBluetoothStatus(false,false,ex.what());for(unsigned i=0;i<20&&!stopping;++i)std::this_thread::sleep_for(std::chrono::milliseconds(100));}}});}
+void StartKvmBluetooth(){if(worker.joinable())return;stopping=false;advertisementRequested=false;advertisementChanged=false;worker=std::thread([]{setpriority(PRIO_PROCESS,syscall(SYS_gettid),-10);while(!stopping){try{Server server;server.Run();}catch(const std::exception& ex){KvmBluetoothStatus(false,false,ex.what());for(unsigned i=0;i<20&&!stopping;++i)std::this_thread::sleep_for(std::chrono::milliseconds(100));}}});}
 void StopKvmBluetooth(){stopping=true;uint64_t one=1;write(wake,&one,sizeof(one));if(worker.joinable())worker.join();std::lock_guard<std::mutex> lock(queueMutex);queue.clear();}
 bool SendKvmBluetooth(uint8_t id,const uint8_t* data,size_t size){if(stopping||wake<0)return false;std::lock_guard<std::mutex> lock(queueMutex);if(queue.size()>=256){queue.clear();const uint8_t zero[8]={};for(uint8_t report:{1,2,3})queue.push_back({report,{zero,zero+(report==3?2:8)}});uint64_t one=1;write(wake,&one,sizeof(one));return false;}queue.push_back({id,{data,data+size},ClockUs()});++queuedReports;uint64_t one=1;write(wake,&one,sizeof(one));return true;}
 std::string GetKvmBluetoothDiagnostics(){std::ostringstream out;out<<"{\"queuedReports\":"<<queuedReports.load()<<",\"keyboardNotifications\":"<<keyboardNotifications.load()<<",\"unchangedKeyboardNotifications\":"<<unchangedKeyboardNotifications.load()<<",\"maxQueueDelayUs\":"<<maxQueueDelayUs.load()<<",\"maxControlCallUs\":"<<maxControlCallUs.load()<<"}";return out.str();}
