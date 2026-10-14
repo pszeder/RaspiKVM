@@ -55,6 +55,11 @@ int main(){
     KvmForward(false,keyRelease,9);KvmForward(false,chord,9);assert(!connecting&&!bluetooth);
     KvmBluetoothStatus(true,true,"");assert(!bluetooth&&wakeRequests==before+1);
     assert(nlohmann::json::parse(GetKvmStatus()).at("status").at("sleeping")==false);
+    hostAddress.clear();
+    UpdateKvm("{\"action\":\"pair\",\"address\":\"FC:B2:14:77:1B:F3\"}");
+    assert(KvmPairingOpen()&&KvmAcceptHost("FC:B2:14:77:1B:F3"));
+    assert(!KvmAcceptHost("00:11:22:33:44:55")); // repair cannot enroll a nearby host
+    pairing={};assert(!KvmAcceptHost("FC:B2:14:77:1B:F3"));
     for(int fd:{keyboardPipe[0],keyboardPipe[1],mousePipe[0],mousePipe[1]})close(fd);
     usb[0]=usb[1]=-1;
     std::cout<<"KVM automatic sleep fallback, held-input release, shortcut wake and USB recovery passed\n";

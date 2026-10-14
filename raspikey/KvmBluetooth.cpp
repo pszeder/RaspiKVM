@@ -44,13 +44,13 @@ const uint8_t Map[]={
 };
 const char* Xml=R"(<node>
 <interface name='org.freedesktop.DBus.ObjectManager'><method name='GetManagedObjects'><arg type='a{oa{sa{sv}}}' direction='out'/></method></interface>
-<interface name='org.bluez.GattService1'><property name='UUID' type='s' access='read'/><property name='Primary' type='b' access='read'/><property name='Includes' type='ao' access='read'/></interface>
+<interface name='org.bluez.GattService1'><property name='UUID' type='s' access='read'/><property name='Primary' type='b' access='read'/><property name='Includes' type='ao' access='read'/><property name='Handle' type='q' access='readwrite'/></interface>
 <interface name='org.bluez.GattCharacteristic1'>
 <method name='ReadValue'><arg type='a{sv}' direction='in'/><arg type='ay' direction='out'/></method>
 <method name='WriteValue'><arg type='ay' direction='in'/><arg type='a{sv}' direction='in'/></method>
 <method name='StartNotify'/><method name='StopNotify'/>
-<property name='UUID' type='s' access='read'/><property name='Service' type='o' access='read'/><property name='Flags' type='as' access='read'/><property name='Value' type='ay' access='read'/><property name='Notifying' type='b' access='read'/></interface>
-<interface name='org.bluez.GattDescriptor1'><method name='ReadValue'><arg type='a{sv}' direction='in'/><arg type='ay' direction='out'/></method><property name='UUID' type='s' access='read'/><property name='Characteristic' type='o' access='read'/><property name='Flags' type='as' access='read'/></interface>
+<property name='UUID' type='s' access='read'/><property name='Service' type='o' access='read'/><property name='Flags' type='as' access='read'/><property name='Value' type='ay' access='read'/><property name='Notifying' type='b' access='read'/><property name='Handle' type='q' access='readwrite'/></interface>
+<interface name='org.bluez.GattDescriptor1'><method name='ReadValue'><arg type='a{sv}' direction='in'/><arg type='ay' direction='out'/></method><property name='UUID' type='s' access='read'/><property name='Characteristic' type='o' access='read'/><property name='Flags' type='as' access='read'/><property name='Handle' type='q' access='readwrite'/></interface>
 <interface name='org.bluez.LEAdvertisement1'><method name='Release'/><property name='Type' type='s' access='read'/><property name='ServiceUUIDs' type='as' access='read'/><property name='LocalName' type='s' access='read'/><property name='Appearance' type='q' access='read'/><property name='Discoverable' type='b' access='read'/></interface>
 <interface name='org.bluez.Agent1'>
 <method name='Release'/><method name='Cancel'/>
@@ -71,6 +71,7 @@ struct Node{
     std::vector<uint8_t> value;
     uint8_t report=0;
     bool notify=false,boot=false;
+    uint16_t handle=0;
 };
 class Server {
 public:
@@ -84,7 +85,19 @@ public:
     void Command(const char* path,const char* interface,const char* method,GVariant* args){auto result=Call(path,interface,method,args);g_variant_unref(result);}
     static void Method(GDBusConnection*,const gchar*,const gchar* path,const gchar* interface,const gchar* method,GVariant* args,GDBusMethodInvocation* invocation,gpointer data){try{static_cast<Server*>(data)->Dispatch(path,interface,method,args,invocation);}catch(const std::exception& ex){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.Failed",ex.what());}}
     static GVariant* Property(GDBusConnection*,const gchar*,const gchar* path,const gchar*,const gchar* property,GError**,gpointer data){return static_cast<Server*>(data)->PropertyValue(path,property);}
-    void Export(const std::string& path,const char* interface){static const GDBusInterfaceVTable table={Method,Property,nullptr,{nullptr}};GError* error=nullptr;guint id=g_dbus_connection_register_object(bus,path.c_str(),g_dbus_node_info_lookup_interface(info,interface),&table,this,nullptr,&error);if(!id){std::string text=error->message;g_error_free(error);throw std::runtime_error(text);}registrations.push_back(id);}
+    static gboolean SetProperty(GDBusConnection*,const gchar*,const gchar* path,const gchar*,const gchar* property,GVariant* value,GError** error,gpointer data){
+        auto* self=static_cast<Server*>(data);auto* node=self->Find(path);
+        if(node&&!strcmp(property,"Handle")&&g_variant_is_of_type(value,G_VARIANT_TYPE_UINT16)){
+            auto handle=g_variant_get_uint16(value);
+            // BlueZ reports auto-assigned characteristic/descriptor handles.
+            // Expose these metadata values for restart verification, without
+            // tracing input. Service starts are always fixed before export.
+            if(handle&&handle==node->handle)return true;
+            if(handle&&!node->handle&&node->interface!="org.bluez.GattService1"){node->handle=handle;self->Changed(*node,"Handle",g_variant_new_uint16(handle));return true;}
+        }
+        g_set_error_literal(error,G_DBUS_ERROR,G_DBUS_ERROR_INVALID_ARGS,"The fixed GATT service handle cannot change.");return false;
+    }
+    void Export(const std::string& path,const char* interface){static const GDBusInterfaceVTable table={Method,Property,SetProperty,{nullptr}};GError* error=nullptr;guint id=g_dbus_connection_register_object(bus,path.c_str(),g_dbus_node_info_lookup_interface(info,interface),&table,this,nullptr,&error);if(!id){std::string text=error->message;g_error_free(error);throw std::runtime_error(text);}registrations.push_back(id);}
     Node& Add(const std::string& path,const char* interface,const char* uuid,const std::string& parent={},std::vector<std::string> flags={},std::vector<uint8_t> value={},uint8_t report=0,bool boot=false){std::unique_ptr<Node> node(new Node{path,interface,uuid,parent,flags,value,report,false,boot});nodes.push_back(std::move(node));Export(path,interface);return *nodes.back();}
     Node* Find(const std::string& path){for(auto& node:nodes)if(node->path==path)return node.get();return nullptr;}
     GVariant* PropertyValue(const std::string& path,const std::string& property){
@@ -96,6 +109,7 @@ public:
             if(property=="ServiceUUIDs"){const char* uuids[]={"1812",nullptr};return g_variant_new_strv(uuids,-1);}return nullptr;
         }
         auto* node=Find(path);if(!node)return nullptr;
+        if(property=="Handle")return g_variant_new_uint16(node->handle);
         if(property=="UUID")return g_variant_new_string(node->uuid.c_str());
         if(property=="Primary")return g_variant_new_boolean(true);
         if(property=="Includes")return g_variant_new_objv(nullptr,0);
@@ -105,9 +119,9 @@ public:
         if(property=="Flags"){std::vector<const char*> values;for(auto& flag:node->flags)values.push_back(flag.c_str());return g_variant_new_strv(values.data(),values.size());}return nullptr;
     }
     GVariant* NodeProperties(Node& node){GVariantBuilder result;g_variant_builder_init(&result,G_VARIANT_TYPE("a{sv}"));
-        for(const char* property: {"UUID","Primary","Includes","Service","Characteristic","Flags","Value","Notifying"}){
+        for(const char* property: {"UUID","Primary","Includes","Handle","Service","Characteristic","Flags","Value","Notifying"}){
             bool service=node.interface=="org.bluez.GattService1",descriptor=node.interface=="org.bluez.GattDescriptor1";
-            if(service&&strcmp(property,"UUID")&&strcmp(property,"Primary")&&strcmp(property,"Includes"))continue;
+            if(service&&strcmp(property,"UUID")&&strcmp(property,"Primary")&&strcmp(property,"Includes")&&strcmp(property,"Handle"))continue;
             if(!service&&(!strcmp(property,"Primary")||!strcmp(property,"Includes")))continue;
             if(descriptor&&(!strcmp(property,"Service")||!strcmp(property,"Notifying")||!strcmp(property,"Value")))continue;
             if(!descriptor&&!strcmp(property,"Characteristic"))continue;
@@ -166,6 +180,9 @@ public:
         if(interface=="org.bluez.Agent1"){
             if(method=="RequestPinCode"||method=="RequestPasskey"){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.Rejected","Bluetooth output uses LE pairing.");return;}
             if(method=="RequestAuthorization"||method=="RequestConfirmation"||method=="AuthorizeService"){
+                // A saved address allows encrypted reconnection, not a new
+                // Just Works bond. New keys require an explicit pairing window.
+                if(method!="AuthorizeService"&&!KvmPairingOpen()){g_dbus_method_invocation_return_dbus_error(invocation,"org.bluez.Error.Rejected","Output host pairing is closed.");return;}
                 auto first=g_variant_get_child_value(args,0);std::string device=g_variant_get_string(first,nullptr);auto address=HostAddress(device);g_variant_unref(first);
                 // Incoming Classic HID reconnections of the trusted source
                 // keyboard still use BlueZ's default agent. The Mac-output
@@ -199,7 +216,12 @@ public:
     void Build(){
         Export(Root,"org.freedesktop.DBus.ObjectManager");
         const std::string hid=std::string(Root)+"/hid",device=std::string(Root)+"/device",battery=std::string(Root)+"/battery";
-        Add(hid,"org.bluez.GattService1","1812");Add(device,"org.bluez.GattService1","180a");Add(battery,"org.bluez.GattService1","180f");
+        // BlueZ's automatic allocator advances on every app registration. Fix
+        // service starts so their unchanged characteristic/CCC order also has
+        // stable handles across deployments and bonded macOS HID cache reuse.
+        Add(hid,"org.bluez.GattService1","1812").handle=0x0400;
+        Add(device,"org.bluez.GattService1","180a").handle=0x0440;
+        Add(battery,"org.bluez.GattService1","180f").handle=0x0450;
         Add(hid+"/map","org.bluez.GattCharacteristic1","2a4b",hid,{"read"},{std::begin(Map),std::end(Map)});
         // RemoteWake + NormallyConnectable. Hosts may cache this for a bond.
         Add(hid+"/info","org.bluez.GattCharacteristic1","2a4a",hid,{"read"},{0x11,1,0,3});
