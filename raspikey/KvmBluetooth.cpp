@@ -215,12 +215,14 @@ public:
     }
     void Build(){
         Export(Root,"org.freedesktop.DBus.ObjectManager");
-        const std::string hid=std::string(Root)+"/hid",device=std::string(Root)+"/device",battery=std::string(Root)+"/battery";
+        const std::string hid=std::string(Root)+"/hid",battery=std::string(Root)+"/battery";
         // BlueZ's automatic allocator advances on every app registration. Fix
         // service starts so their unchanged characteristic/CCC order also has
         // stable handles across deployments and bonded macOS HID cache reuse.
         Add(hid,"org.bluez.GattService1","1812").handle=0x0400;
-        Add(device,"org.bluez.GattService1","180a").handle=0x0440;
+        // BlueZ already publishes Device Information and its PnP identity.
+        // A second DIS with a different product ID makes macOS register two
+        // HID devices for one BLE peripheral, duplicating keyboard events.
         Add(battery,"org.bluez.GattService1","180f").handle=0x0450;
         Add(hid+"/map","org.bluez.GattCharacteristic1","2a4b",hid,{"read"},{std::begin(Map),std::end(Map)});
         // RemoteWake + NormallyConnectable. Hosts may cache this for a bond.
@@ -232,8 +234,6 @@ public:
         Add(hid+"/bootKeyboard","org.bluez.GattCharacteristic1","2a22",hid,{"read","notify","encrypt-read"},std::vector<uint8_t>(8),1,true);
         Add(hid+"/bootMouse","org.bluez.GattCharacteristic1","2a33",hid,{"read","notify","encrypt-read"},std::vector<uint8_t>(3),2,true);
         Add(hid+"/bootLed","org.bluez.GattCharacteristic1","2a32",hid,{"read","write","write-without-response","encrypt-read","encrypt-write"},{0});
-        Add(device+"/pnp","org.bluez.GattCharacteristic1","2a50",device,{"read"},{2,0x6b,0x1d,4,1,1,0});
-        Add(device+"/manufacturer","org.bluez.GattCharacteristic1","2a29",device,{"read"},{'R','a','s','p','i','K','e','y'});
         Add(battery+"/level","org.bluez.GattCharacteristic1","2a19",battery,{"read"},{100});
         Export(std::string(Root)+"/advertisement","org.bluez.LEAdvertisement1");Export(std::string(Root)+"/agent","org.bluez.Agent1");
     }

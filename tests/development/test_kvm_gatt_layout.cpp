@@ -52,7 +52,10 @@ int main(){
             Reply changed;Call(client,server,node->path.c_str(),Properties,"Set",g_variant_new("(ssv)",node->interface.c_str(),"Handle",g_variant_new_uint16(handle+1)),changed);assert(!changed.value&&g_error_matches(changed.error,G_DBUS_ERROR,G_DBUS_ERROR_INVALID_ARGS));g_clear_error(&changed.error);
             g_variant_unref(properties);g_variant_unref(interfaces);
         }
-        assert(services==3);
+        assert(services==2);
+        // The daemon owns DIS/PnP. Exporting another identity causes macOS to
+        // create two keyboards for the same BLE location after rediscovery.
+        for(const auto& node:server.nodes){assert(node->uuid!="180a");assert(node->uuid!="2a50");}
         auto* map=server.Find(std::string(Root)+"/hid/map");assert(map&&map->handle==0);
         Reply assigned;Call(client,server,map->path.c_str(),Properties,"Set",g_variant_new("(ssv)",map->interface.c_str(),"Handle",g_variant_new_uint16(0x0402)),assigned);assert(assigned.value&&!assigned.error&&map->handle==0x0402);g_variant_unref(assigned.value);
         Reply replaced;Call(client,server,map->path.c_str(),Properties,"Set",g_variant_new("(ssv)",map->interface.c_str(),"Handle",g_variant_new_uint16(0x0403)),replaced);assert(!replaced.value&&replaced.error&&map->handle==0x0402);g_clear_error(&replaced.error);
