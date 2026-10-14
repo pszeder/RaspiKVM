@@ -60,7 +60,7 @@ void Switch(bool target,bool explicitSwitch=false){
     input.Switched();
     if(target&&(!enabled||!ready)){
         if(enabled&&!hostAddress.empty()&&RequestKvmBluetoothConnection()){
-            connecting=true;connectDeadline=Clock::now()+std::chrono::seconds(15);error="Connecting to Bluetooth host. Input remains on USB.";
+            connecting=true;connectDeadline=Clock::now()+std::chrono::seconds(60);error="Connecting to Bluetooth host. Input remains on USB.";
         }else error="Bluetooth host is not ready. Input remains on USB.";
         return;
     }

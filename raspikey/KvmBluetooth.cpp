@@ -125,7 +125,10 @@ public:
         for(auto& node:nodes)if(node->uuid=="2a4c"||node->uuid=="2a4e")node->value={1};
     }
     void RefreshPeer(){auto address=KvmHostAddress();if(address.empty()){paired=false;LinkClosed();return;}observedHost=address;
-        try{auto response=Call(HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);g_variant_unref(response);
+        try{auto response=Call(HostPath(address).c_str(),Properties,"GetAll",g_variant_new("(s)","org.bluez.Device1"));GVariant* properties;g_variant_get(response,"(@a{sv})",&properties);gboolean c=false,p=false,trusted=false;const gchar* alias="Bluetooth computer";g_variant_lookup(properties,"Connected","b",&c);g_variant_lookup(properties,"Paired","b",&p);g_variant_lookup(properties,"Trusted","b",&trusted);g_variant_lookup(properties,"Alias","&s",&alias);connected=c;paired=p;KvmHostSeen(address,alias,c,p);g_variant_unref(properties);g_variant_unref(response);
+            // Trust only the configured, already bonded output computer. This
+            // keeps BlueZ reconnect authorization without opening pairing.
+            if(p&&!trusted&&KvmAcceptHost(address))Command(HostPath(address).c_str(),Properties,"Set",g_variant_new("(ssv)","org.bluez.Device1","Trusted",g_variant_new_boolean(true)));
         }catch(const std::exception&){connected=false;paired=false;KvmHostSeen(address,"",false,false);}
         // BlueZ retains bonded peers' CCC configuration across disconnects.
         // Notification state belongs to StartNotify/StopNotify, not this link.

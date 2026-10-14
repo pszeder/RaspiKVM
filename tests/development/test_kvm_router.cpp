@@ -40,6 +40,11 @@ int main(){
     wakeAccepted=true;ready=false;Switch(true);assert(!bluetooth&&wakeRequests==4);
     KvmBluetoothStatus(false,false,"");assert(!sleeping);
     hostAddress="FC:B2:14:77:1B:F3";Switch(true);assert(connecting&&!bluetooth);
+    assert(connectDeadline-Clock::now()>std::chrono::seconds(55));
+    assert(KvmAcceptHost(hostAddress));
+    assert(!KvmAcceptHost("00:11:22:33:44:55")); // advertising never opens pairing
+    auto denied=hostAddress;pendingAddress.clear();
+    assert(!KvmAcceptHost("00:11:22:33:44:55")&&pendingAddress.empty()&&hostAddress==denied);
     Switch(false);assert(!connecting&&!bluetooth); // cancelling never wakes later
     auto before=wakeRequests;KvmBluetoothStatus(true,true,"");assert(!bluetooth&&wakeRequests==before);
     ready=false;Switch(true);assert(connecting&&!bluetooth);
