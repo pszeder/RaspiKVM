@@ -221,8 +221,8 @@ public:
         // stable handles across deployments and bonded macOS HID cache reuse.
         Add(hid,"org.bluez.GattService1","1812").handle=0x0400;
         // BlueZ already publishes Device Information and its PnP identity.
-        // A second DIS with a different product ID makes macOS register two
-        // HID devices for one BLE peripheral, duplicating keyboard events.
+        // Two different PnP identities were observed as two macOS keyboards.
+        // Keep one identity while validating rediscovery across app restarts.
         Add(battery,"org.bluez.GattService1","180f").handle=0x0450;
         Add(hid+"/map","org.bluez.GattCharacteristic1","2a4b",hid,{"read"},{std::begin(Map),std::end(Map)});
         // RemoteWake + NormallyConnectable. Hosts may cache this for a bond.
@@ -254,7 +254,10 @@ public:
             // Quiet application startup: do not invite a sleeping Mac to
             // reconnect/rediscover the replaced GATT database during updates.
             if(!advertisement&&advertisementRequested){discoverable=pairing;advertisement=true;g_dbus_connection_call(bus,"org.bluez",Adapter,"org.bluez.LEAdvertisingManager1","RegisterAdvertisement",g_variant_new("(o@a{sv})",(std::string(Root)+"/advertisement").c_str(),g_variant_new_array(G_VARIANT_TYPE("{sv}"),nullptr,0)),nullptr,G_DBUS_CALL_FLAGS_NONE,10000,nullptr,[](GObject* object,GAsyncResult* result,gpointer data){auto* self=static_cast<Server*>(data);GError* error=nullptr;auto reply=g_dbus_connection_call_finish(G_DBUS_CONNECTION(object),result,&error);if(!reply){self->advertisement=false;KvmBluetoothStatus(self->application,false,error->message);g_error_free(error);}else g_variant_unref(reply);},this);}
-            RefreshPeer();Status();
+            // Device1 signals maintain established links. Avoid a synchronous
+            // status query on every input-loop tick while that state is valid.
+            if(!connected||!paired||KvmHostAddress()!=observedHost)RefreshPeer();
+            Status();
         }catch(const std::exception& ex){KvmBluetoothStatus(application,false,ex.what());}
     }
     void Drain(){uint64_t count;while(read(wake,&count,sizeof(count))>0){}std::deque<Report> reports;std::string forgotten;{std::lock_guard<std::mutex> lock(queueMutex);reports.swap(queue);forgotten.swap(forgetHost);}
@@ -299,6 +302,14 @@ public:
                 if(disconnected)self->LinkClosed();else self->RefreshPeer();
                 self->Status();
             }},this,nullptr);
+        auto removedWatch=g_dbus_connection_signal_subscribe(bus,"org.bluez","org.freedesktop.DBus.ObjectManager","InterfacesRemoved",nullptr,nullptr,G_DBUS_SIGNAL_FLAGS_NONE,
+            [](GDBusConnection*,const gchar*,const gchar*,const gchar*,const gchar*,GVariant* args,gpointer data){auto* self=static_cast<Server*>(data);const gchar* path;GVariant* interfaces;g_variant_get(args,"(&o@as)",&path,&interfaces);
+                auto address=HostAddress(path);bool removed=false;GVariantIter iter;const gchar* interface;g_variant_iter_init(&iter,interfaces);while(g_variant_iter_next(&iter,"&s",&interface))removed|=!strcmp(interface,"org.bluez.Device1");g_variant_unref(interfaces);
+                if(!removed||address.empty()||address!=KvmHostAddress())return;
+                // Device removal invalidates the link and its subscriptions.
+                // Ordinary disconnects still retain their notification state.
+                self->LinkClosed();self->paired=false;for(auto& node:self->nodes)node->notify=false;KvmHostSeen(address,"",false,false);self->Status();
+            },this,nullptr);
         auto daemonWatch=g_dbus_connection_signal_subscribe(bus,"org.freedesktop.DBus", "org.freedesktop.DBus","NameOwnerChanged","/org/freedesktop/DBus","org.bluez",G_DBUS_SIGNAL_FLAGS_NONE,
             [](GDBusConnection*,const gchar*,const gchar*,const gchar*,const gchar*,GVariant* args,gpointer data){auto* self=static_cast<Server*>(data);const gchar *name,*oldOwner,*newOwner;g_variant_get(args,"(&s&s&s)",&name,&oldOwner,&newOwner);(void)name;(void)oldOwner;if(!*newOwner){self->application=false;self->advertisement=false;self->agent=false;self->LinkClosed();self->paired=false;for(auto& node:self->nodes)node->notify=false;KvmBluetoothStatus(false,false,"Bluetooth restarted. Reconnecting output host.");}},this,nullptr);
         auto* timer=g_timeout_source_new(1000);g_source_set_callback(timer,[](gpointer data)->gboolean{static_cast<Server*>(data)->Tick();return G_SOURCE_CONTINUE;},this,nullptr);g_source_attach(timer,context);
@@ -310,6 +321,7 @@ public:
         auto output=KvmHostAddress();if(!output.empty())try{Command(HostPath(output).c_str(),"org.bluez.Device1","Disconnect",nullptr);}catch(const std::exception& ex){fprintf(stderr,"KVM: close output link: %s\n",ex.what());}
         g_source_destroy(timer);g_source_unref(timer);g_source_destroy(source);g_source_unref(source);
         g_dbus_connection_signal_unsubscribe(bus,peerWatch);g_dbus_connection_signal_unsubscribe(bus,daemonWatch);
+        g_dbus_connection_signal_unsubscribe(bus,removedWatch);
     }
     ~Server(){if(bus){g_dbus_connection_close_sync(bus,nullptr,nullptr);g_object_unref(bus);}if(info)g_dbus_node_info_unref(info);if(loop)g_main_loop_unref(loop);if(context){g_main_context_pop_thread_default(context);g_main_context_unref(context);}}
 };

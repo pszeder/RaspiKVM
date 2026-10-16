@@ -53,8 +53,8 @@ int main(){
             g_variant_unref(properties);g_variant_unref(interfaces);
         }
         assert(services==2);
-        // The daemon owns DIS/PnP. Exporting another identity causes macOS to
-        // create two keyboards for the same BLE location after rediscovery.
+        // The daemon owns DIS/PnP. Two real Mac keyboard identities were
+        // observed at one BLE location while the app supplied a second DIS.
         for(const auto& node:server.nodes){assert(node->uuid!="180a");assert(node->uuid!="2a50");}
         auto* map=server.Find(std::string(Root)+"/hid/map");assert(map&&map->handle==0);
         Reply assigned;Call(client,server,map->path.c_str(),Properties,"Set",g_variant_new("(ssv)",map->interface.c_str(),"Handle",g_variant_new_uint16(0x0402)),assigned);assert(assigned.value&&!assigned.error&&map->handle==0x0402);g_variant_unref(assigned.value);
