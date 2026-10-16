@@ -23,6 +23,8 @@
 #include <condition_variable>
 #include <sstream>
 #include <queue>
+#include <future>
+#include <memory>
 
 #include "../Globals.h"
 #include "../Logger.h"
@@ -239,7 +241,7 @@ namespace bluetooth
 		return true;
 	}
 
-	vector<BtDevice> GetDevices()
+	vector<BtDevice> ReadDevicesOnBluetoothLoop()
 	{
 		vector<BtDevice> reply;
 		for (auto list = g_list_first(g_devList); list; list = g_list_next(list))
@@ -255,6 +257,29 @@ namespace bluetooth
 		return reply;
 	}
 
+    vector<BtDevice> GetDevices()
+    {
+#ifdef RASPIKEY_MODERN_RUNTIME
+        // GDBus proxy properties and their borrowed DBusMessageIter data belong
+        // to the Bluetooth loop. HTTP polling must copy them on that loop too.
+        if (g_main_context_is_owner(g_main_context_default()))
+            return ReadDevicesOnBluetoothLoop();
+        using Request = shared_ptr<promise<vector<BtDevice>>>;
+        auto request = make_shared<promise<vector<BtDevice>>>();
+        auto result = request->get_future();
+        g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
+            const auto& request = *static_cast<Request*>(data);
+            try { request->set_value(ReadDevicesOnBluetoothLoop()); }
+            catch (...) { request->set_exception(current_exception()); }
+            return G_SOURCE_REMOVE;
+        }, new Request(request), [](gpointer data) { delete static_cast<Request*>(data); });
+        if (result.wait_for(chrono::seconds(3)) != future_status::ready)
+            ThrowRuntimeError("Bluetooth device query timed out");
+        return result.get();
+#else
+        return ReadDevicesOnBluetoothLoop();
+#endif
+    }
 	void GenericCallback(const DBusError* error, void* userdata)
 	{
 		char* str = (char*)userdata;
