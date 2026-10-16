@@ -613,6 +613,16 @@ namespace bluetooth
 	void OnDisconnect(DBusConnection* connection, void* userdata)
 	{
 		InfoMsg("OnDisconnect()");
+		AgentServiceLost(connection);
+		g_agentManager = nullptr;
+		{
+			lock_guard<mutex> guard(g_mutex);
+			if (g_bIsPairing) {
+				g_bIsPairing = false;
+				g_bHasPairingReplyMessage = true;
+				g_pairingReplyMessage = ReplyMessage(ReplyMessageStatus::Fail, "Bluetooth restarted. Retry pairing.");
+			}
+		}
 
 		g_list_free(g_ctrlList);
 		g_ctrlList = nullptr;
@@ -717,6 +727,8 @@ namespace bluetooth
 
 			if (!g_agentManager)
 				g_agentManager = proxy;
+			// Manager and adapter proxies can arrive in either order.
+			AgentRegister(g_dbusConn, g_agentManager);
 		}
 	}
 
@@ -749,7 +761,10 @@ namespace bluetooth
 		else if (!strcmp(intf, "org.bluez.AgentManager1"))
 		{
 			if (g_agentManager == proxy)
+			{
+				AgentServiceLost(g_dbusConn);
 				g_agentManager = nullptr;
+			}
 		}
 	}
 
@@ -764,6 +779,7 @@ namespace bluetooth
         }else InfoMsg("Input reconnected: %s",address);
     }
     gboolean ReconnectInputs(gpointer){
+        if(g_agentManager)AgentRegister(g_dbusConn,g_agentManager);
         if(!g_defaultCtrl||GetPropertyValue(g_defaultCtrl,"Powered")!="yes")return G_SOURCE_CONTINUE;
         const auto output=KvmHostAddress();
         for(auto* item=g_list_first(g_devList);item;item=g_list_next(item)){

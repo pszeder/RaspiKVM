@@ -1,6 +1,6 @@
 //
 // RaspiKey Copyright (c) 2019 George Samartzidis <samartzidis@gmail.com>. All rights reserved.
-// You are not allowed to redistribute, modify or sell any part of this file in either 
+// You are not allowed to redistribute, modify or sell any part of this file in either
 // compiled or non-compiled form without the author's written permission.
 //
 
@@ -10,7 +10,7 @@
 #include "../gdbus/gdbus.h"
 
 namespace bluetooth
-{	
+{
 	dbus_bool_t AgentCompletion();
 	void AgentConfirmResponse(DBusConnection* conn, const char* input);
 	DBusMessage* OnDisplayPasskey(DBusConnection* conn, DBusMessage* msg, void* userdata);
@@ -19,6 +19,7 @@ namespace bluetooth
 	void RegisterAgentSetup(DBusMessageIter* iter, void* userdata);
 	void RegisterAgentReply(DBusMessage* message, void* userdata);
 	void AgentRegister(DBusConnection* conn, GDBusProxy* manager);
+	void AgentServiceLost(DBusConnection* conn);
 	void UnregisterAgentSetup(DBusMessageIter* iter, void* userdata);
 	void UnregisterAgentReply(DBusMessage* message, void* userdata);
 	void AgentUnregister(DBusConnection* conn, GDBusProxy* manager);
