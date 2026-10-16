@@ -1,6 +1,7 @@
 // Build on Windows or Linux with Node 22. Upload only source and the built UI to the Pi.
 const fs = require('fs'), path = require('path'), crypto = require('crypto'), cp = require('child_process');
 const repo = path.resolve(__dirname, '../..');
+const {normalizeSource} = require('./source-bytes.cjs');
 const out = path.resolve(process.argv[2] || path.join(repo, 'dist'));
 if (Number(process.versions.node.split('.')[0]) !== 22) throw Error('Use Node.js 22 for this pinned legacy frontend build.');
 const npm = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
@@ -25,7 +26,7 @@ function copy(from, to, skip = new Set()) {
         if (skip.has(e.name)) continue;
         if (e.isSymbolicLink()) throw Error('Unexpected source symlink: '+e.name);
         const a=path.join(from,e.name), b=path.join(to,e.name);
-        if (e.isDirectory()) copy(a,b,skip); else fs.copyFileSync(a,b);
+        if (e.isDirectory()) copy(a,b,skip); else fs.writeFileSync(b,normalizeSource(a,fs.readFileSync(a)));
     }
 }
 try {

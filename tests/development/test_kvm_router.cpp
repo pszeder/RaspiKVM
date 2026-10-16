@@ -7,6 +7,7 @@ namespace {unsigned wakeRequests=0,connectionRequests=0,bluetoothReports=0;bool 
 void StartKvmBluetooth(){}
 void StopKvmBluetooth(){}
 bool SendKvmBluetooth(uint8_t,const uint8_t*,size_t){++bluetoothReports;return true;}
+std::string GetKvmBluetoothDiagnostics(){return "{}";}
 bool WakeKvmBluetoothHost(){++wakeRequests;return wakeAccepted;}
 void ForgetKvmBluetoothHost(const char*){}
 bool RequestKvmBluetoothConnection(){++connectionRequests;return true;}
@@ -39,6 +40,11 @@ int main(){
     wakeAccepted=true;ready=false;Switch(true);assert(!bluetooth&&wakeRequests==4);
     KvmBluetoothStatus(false,false,"");assert(!sleeping);
     hostAddress="FC:B2:14:77:1B:F3";Switch(true);assert(connecting&&!bluetooth);
+    assert(connectDeadline-Clock::now()>std::chrono::seconds(55));
+    assert(KvmAcceptHost(hostAddress));
+    assert(!KvmAcceptHost("00:11:22:33:44:55")); // advertising never opens pairing
+    auto denied=hostAddress;pendingAddress.clear();
+    assert(!KvmAcceptHost("00:11:22:33:44:55")&&pendingAddress.empty()&&hostAddress==denied);
     Switch(false);assert(!connecting&&!bluetooth); // cancelling never wakes later
     auto before=wakeRequests;KvmBluetoothStatus(true,true,"");assert(!bluetooth&&wakeRequests==before);
     ready=false;Switch(true);assert(connecting&&!bluetooth);
@@ -49,6 +55,11 @@ int main(){
     KvmForward(false,keyRelease,9);KvmForward(false,chord,9);assert(!connecting&&!bluetooth);
     KvmBluetoothStatus(true,true,"");assert(!bluetooth&&wakeRequests==before+1);
     assert(nlohmann::json::parse(GetKvmStatus()).at("status").at("sleeping")==false);
+    hostAddress.clear();
+    UpdateKvm("{\"action\":\"pair\",\"address\":\"FC:B2:14:77:1B:F3\"}");
+    assert(KvmPairingOpen()&&KvmAcceptHost("FC:B2:14:77:1B:F3"));
+    assert(!KvmAcceptHost("00:11:22:33:44:55")); // repair cannot enroll a nearby host
+    pairing={};assert(!KvmAcceptHost("FC:B2:14:77:1B:F3"));
     for(int fd:{keyboardPipe[0],keyboardPipe[1],mousePipe[0],mousePipe[1]})close(fd);
     usb[0]=usb[1]=-1;
     std::cout<<"KVM automatic sleep fallback, held-input release, shortcut wake and USB recovery passed\n";

@@ -23,9 +23,15 @@
 #include <condition_variable>
 #include <sstream>
 #include <queue>
+#include <future>
+#include <memory>
 
 #include "../Globals.h"
 #include "../Logger.h"
+#ifdef RASPIKEY_MODERN_RUNTIME
+#include "../InputReconnectPolicy.h"
+#include "../KvmRouter.h"
+#endif
 
 using namespace std;
 
@@ -44,6 +50,14 @@ namespace bluetooth
 	ReplyMessage g_pairingReplyMessage;
 	bool g_bHasPairingReplyMessage = false;
 	bool g_bIsPairing = false;
+#ifdef RASPIKEY_MODERN_RUNTIME
+    InputReconnectPolicy g_inputReconnect;
+    mutex g_reconnectMutex;
+    void PauseInputReconnect(const char* address,bool pause){
+        lock_guard<mutex> guard(g_reconnectMutex);
+        if(pause)g_inputReconnect.Pause(address);else g_inputReconnect.Resume(address);
+    }
+#endif
 
 	void ThrowRuntimeError(const string& msg)
 	{
@@ -227,7 +241,7 @@ namespace bluetooth
 		return true;
 	}
 
-	vector<BtDevice> GetDevices()
+	vector<BtDevice> ReadDevicesOnBluetoothLoop()
 	{
 		vector<BtDevice> reply;
 		for (auto list = g_list_first(g_devList); list; list = g_list_next(list))
@@ -243,6 +257,29 @@ namespace bluetooth
 		return reply;
 	}
 
+    vector<BtDevice> GetDevices()
+    {
+#ifdef RASPIKEY_MODERN_RUNTIME
+        // GDBus proxy properties and their borrowed DBusMessageIter data belong
+        // to the Bluetooth loop. HTTP polling must copy them on that loop too.
+        if (g_main_context_is_owner(g_main_context_default()))
+            return ReadDevicesOnBluetoothLoop();
+        using Request = shared_ptr<promise<vector<BtDevice>>>;
+        auto request = make_shared<promise<vector<BtDevice>>>();
+        auto result = request->get_future();
+        g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
+            const auto& request = *static_cast<Request*>(data);
+            try { request->set_value(ReadDevicesOnBluetoothLoop()); }
+            catch (...) { request->set_exception(current_exception()); }
+            return G_SOURCE_REMOVE;
+        }, new Request(request), [](gpointer data) { delete static_cast<Request*>(data); });
+        if (result.wait_for(chrono::seconds(3)) != future_status::ready)
+            ThrowRuntimeError("Bluetooth device query timed out");
+        return result.get();
+#else
+        return ReadDevicesOnBluetoothLoop();
+#endif
+    }
 	void GenericCallback(const DBusError* error, void* userdata)
 	{
 		char* str = (char*)userdata;
@@ -484,6 +521,9 @@ namespace bluetooth
 
 		if (!arg || !strlen(arg))
 			ThrowRuntimeError("Missing device address argument");
+#ifdef RASPIKEY_MODERN_RUNTIME
+        PauseInputReconnect(arg,true);
+#endif
 
 		CheckDefaultCtrlOrThrow();
 
@@ -529,6 +569,9 @@ namespace bluetooth
 
 		if (!address || !strlen(address))
 			ThrowRuntimeError("Missing device address argument");
+#ifdef RASPIKEY_MODERN_RUNTIME
+        PauseInputReconnect(address,false);
+#endif
 
 		GDBusProxy* proxy = FindProxyByAddress(g_devList, address);
 		if (!proxy)
@@ -557,6 +600,9 @@ namespace bluetooth
 
 		if (!address || !strlen(address))
 			ThrowRuntimeError("Missing device address argument");
+#ifdef RASPIKEY_MODERN_RUNTIME
+        PauseInputReconnect(address,true);
+#endif
 
 		GDBusProxy* proxy = FindProxyByAddress(g_devList, address);
 		if (!proxy)
@@ -592,6 +638,16 @@ namespace bluetooth
 	void OnDisconnect(DBusConnection* connection, void* userdata)
 	{
 		InfoMsg("OnDisconnect()");
+		AgentServiceLost(connection);
+		g_agentManager = nullptr;
+		{
+			lock_guard<mutex> guard(g_mutex);
+			if (g_bIsPairing) {
+				g_bIsPairing = false;
+				g_bHasPairingReplyMessage = true;
+				g_pairingReplyMessage = ReplyMessage(ReplyMessageStatus::Fail, "Bluetooth restarted. Retry pairing.");
+			}
+		}
 
 		g_list_free(g_ctrlList);
 		g_ctrlList = nullptr;
@@ -696,6 +752,8 @@ namespace bluetooth
 
 			if (!g_agentManager)
 				g_agentManager = proxy;
+			// Manager and adapter proxies can arrive in either order.
+			AgentRegister(g_dbusConn, g_agentManager);
 		}
 	}
 
@@ -728,10 +786,45 @@ namespace bluetooth
 		else if (!strcmp(intf, "org.bluez.AgentManager1"))
 		{
 			if (g_agentManager == proxy)
+			{
+				AgentServiceLost(g_dbusConn);
 				g_agentManager = nullptr;
+			}
 		}
 	}
 
+#ifdef RASPIKEY_MODERN_RUNTIME
+    void InputReconnectReply(DBusMessage* message,void* userdata){
+        const auto* address=static_cast<const char*>(userdata);
+        {lock_guard<mutex> guard(g_reconnectMutex);g_inputReconnect.Complete(address);}
+        DBusError error;dbus_error_init(&error);
+        if(dbus_set_error_from_message(&error,message)){
+            InfoMsg("Input reconnect %s: %s",address,error.name);
+            dbus_error_free(&error);
+        }else InfoMsg("Input reconnected: %s",address);
+    }
+    gboolean ReconnectInputs(gpointer){
+        if(g_agentManager)AgentRegister(g_dbusConn,g_agentManager);
+        if(!g_defaultCtrl||GetPropertyValue(g_defaultCtrl,"Powered")!="yes")return G_SOURCE_CONTINUE;
+        const auto output=KvmHostAddress();
+        for(auto* item=g_list_first(g_devList);item;item=g_list_next(item)){
+            auto* proxy=static_cast<GDBusProxy*>(item->data);BtDevice device{};
+            if(!GetDeviceInfo(proxy,device))continue;
+            const bool eligible=InputReconnectPolicy::Eligible(device.Address,output,device.Icon,
+                device.Paired,device.Trusted,GetPropertyValue(proxy,"Blocked")=="yes");
+            bool attempt;
+            {lock_guard<mutex> guard(g_reconnectMutex);attempt=g_inputReconnect.Begin(device.Address,eligible,device.Connected,InputReconnectPolicy::Clock::now());}
+            if(!attempt)continue;
+            auto* address=g_strdup(device.Address.c_str());
+            // Asynchronous BlueZ calls keep radio timeouts off HID and HTTP threads.
+            if(!g_dbus_proxy_method_call(proxy,"Connect",nullptr,InputReconnectReply,address,g_free)){
+                {lock_guard<mutex> guard(g_reconnectMutex);g_inputReconnect.Complete(device.Address);}
+                g_free(address);
+            }
+        }
+        return G_SOURCE_CONTINUE;
+    }
+#endif
 	void MainThread()
 	{
 		g_mainLoop = g_main_loop_new(NULL, FALSE);
@@ -742,8 +835,14 @@ namespace bluetooth
 		g_dbus_client_set_connect_watch(client, OnConnect, NULL);
 		g_dbus_client_set_disconnect_watch(client, OnDisconnect, NULL);
 		g_dbus_client_set_proxy_handlers(client, OnProxyAdded, OnProxyRemoved, NULL, NULL);
+#ifdef RASPIKEY_MODERN_RUNTIME
+        const auto reconnectTimer=g_timeout_add_seconds(5,ReconnectInputs,nullptr);
+#endif
 
 		g_main_loop_run(g_mainLoop);
+#ifdef RASPIKEY_MODERN_RUNTIME
+        g_source_remove(reconnectTimer);
+#endif
 
 		g_dbus_client_unref(client);
 
