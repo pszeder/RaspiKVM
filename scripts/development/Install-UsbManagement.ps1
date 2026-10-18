@@ -25,8 +25,10 @@ if(!(Test-Path -LiteralPath (Join-Path $destination 'before.json'))) {
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Ensure-UsbManagement.ps1') -Destination $destination -Force
 [ordered]@{InstanceId=$profile.InstanceId;HostMac=$profile.HostMac;ManagementAddress='10.12.194.6'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destination 'development.json')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-UsbManagement.ps1') -Destination $destination -Force
+$taskScript=Join-Path $destination 'Invoke-UsbManagement.ps1'
 $script=Join-Path $destination 'Ensure-UsbManagement.ps1'
-$action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$script+'"')
+$action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -WorkingDirectory $destination -Argument ('-NoProfile -STA -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$taskScript+'"')
 $triggers=@((New-ScheduledTaskTrigger -AtStartup),(New-ScheduledTaskTrigger -AtLogOn))
 $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 3)
 $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest

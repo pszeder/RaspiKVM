@@ -3,7 +3,8 @@ param(
     [Parameter(Position=0)][ValidateSet('doctor','build','deploy','update','setup','rollback','restart','logs','ssh','reboot','poweroff')][string]$Action='doctor',
     [string]$Target,
     [string]$Bundle,
-    [string]$ConfigFile
+    [string]$ConfigFile,
+    [switch]$RequireInternet
 )
 $ErrorActionPreference='Stop'
 if(!$ConfigFile){$ConfigFile=Join-Path $PSScriptRoot '.dev\settings.json'}
@@ -56,20 +57,25 @@ if($Action -eq 'doctor') {
     & ssh @sshArgs $dest 'sudo -n /usr/local/libexec/raspikey/deploy-control.sh status'
     if($LASTEXITCODE -ne 0){throw 'Password-free deployment/service health check failed.'}
     $program=@'
-import json, pathlib, subprocess, urllib.request
+import json, pathlib, subprocess, sys, urllib.request
 def run(args): return subprocess.check_output(args,text=True).strip()
 devices=json.load(urllib.request.urlopen('http://localhost/bt/devices',timeout=5))
 checks={'hostname':run(['hostname']),'model':pathlib.Path('/proc/device-tree/model').read_text().strip('\0'),
 'architecture':run(['dpkg','--print-architecture']),'bluetoothPowered': 'Powered: yes' in run(['bluetoothctl','show']),
 'pairedKeyboardCount':sum(d.get('icon')=='input-keyboard' and d.get('paired',False) and d.get('connected',False) for d in devices),
 'pairedMouseCount':sum(d.get('icon')=='input-mouse' and d.get('paired',False) and d.get('connected',False) for d in devices),
-'usbInternet':urllib.request.urlopen('https://deb.debian.org/',timeout=15).status==200}
+'usbInternet':False}
+try: checks['usbInternet']=subprocess.run(['curl','-fsS','-o','/dev/null','--max-time','5','https://deb.debian.org/'],timeout=6,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+except (OSError, subprocess.TimeoutExpired): pass
 checks['deploymentFramework']=json.loads(pathlib.Path('/etc/raspikey-dev-deploy.json').read_text()).get('frameworkRelease','setup-1')
 print(json.dumps(checks,indent=2))
 assert checks['hostname']=='raspikey-dev' and checks['architecture']=='armhf'
-assert checks['bluetoothPowered'] and checks['usbInternet']
+assert checks['bluetoothPowered']
+assert '--require-internet' not in sys.argv or checks['usbInternet']
 '@
-    $program | & ssh @sshArgs $dest 'python3 -'
+    $doctorCommand='python3 -'
+    if($RequireInternet){$doctorCommand+=' --require-internet'}
+    $program | & ssh @sshArgs $dest $doctorCommand
     if($LASTEXITCODE -ne 0){throw 'Development readiness checks failed.'}
     Write-Host "Development Pi ready: http://$Target/html/index.html"
     return
