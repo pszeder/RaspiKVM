@@ -18,7 +18,9 @@ if(!$Target) {
     $adapter=@(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {$_.MacAddress -eq $config.HostMac})
     if($adapter.Count -eq 1) {
         $ips=@(Get-NetIPAddress -InterfaceIndex $adapter[0].ifIndex -AddressFamily IPv4)
-        if($ips.IPAddress -contains '192.168.137.1') {
+        if($ips.IPAddress -contains '10.12.194.6') {
+            $Target='10.12.194.1'
+        } elseif($ips.IPAddress -contains '192.168.137.1') {
             $neighbor=@(Get-NetNeighbor -InterfaceIndex $adapter[0].ifIndex -AddressFamily IPv4 | Where-Object {$_.LinkLayerAddress -eq $config.DeviceMac -and $_.IPAddress -like '192.168.137.*'})
             if($neighbor.Count -eq 1){$Target=$neighbor[0].IPAddress}
         } elseif(@($ips | Where-Object {$_.IPAddress -like '10.12.194.*'}).Count) {$Target='10.12.194.1'}
