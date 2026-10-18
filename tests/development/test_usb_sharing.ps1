@@ -31,6 +31,10 @@ $profile=[pscustomobject]@{HostMac='02-77-E8-46-AD-01';InstanceId='03368fab-b75b
 $adapter=[pscustomobject]@{MacAddress=$profile.HostMac;PnPDeviceID='development';InterfaceGuid=$private;ifIndex=32}
 Restore-UsbSharing $profile $adapter | Out-Null
 Check ($script:Calls.Count -eq 0) 'Healthy sharing changed'
+$script:Dhcp=$false
+Restore-UsbSharing $profile $adapter | Out-Null
+Check ($script:Calls.Count -eq 0) 'Healthy fixed-address sharing reset because DHCP was absent'
+$script:Dhcp=$true
 $target.SharingEnabled=$false
 Restore-UsbSharing $profile $adapter | Out-Null
 Check (($script:Calls -join ',') -eq ($private+':1')) 'Did not restore only the saved private adapter'

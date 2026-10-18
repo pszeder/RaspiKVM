@@ -30,8 +30,9 @@ function Restore-UsbSharing {
     if(-not $source[0].Config.SharingEnabled){
         try{$source[0].Config.EnableSharing(0)}catch{$warnings+=$_.Exception.Message}
     }
-    $dhcp=@(Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue | Where-Object LocalAddress -eq '192.168.137.1')
-    if(-not $target[0].Config.SharingEnabled -or !$dhcp.Count){
+    # Fixed Pi addresses do not need the ICS DHCP listener. Re-enabling a
+    # healthy private role can reset host aliases and interrupt active SSH.
+    if(-not $target[0].Config.SharingEnabled){
         try{$target[0].Config.EnableSharing(1)}catch{$warnings+=$_.Exception.Message}
     }
     $gateway=@(Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object IPAddress -eq '192.168.137.1')
