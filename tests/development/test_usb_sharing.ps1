@@ -9,6 +9,7 @@ $other='9f5bb63b-c5e6-421f-b252-a2daacf7da79'
 function New-Configuration($enabled,$role,$id){
     $value=[pscustomobject]@{SharingEnabled=$enabled;SharingConnectionType=$role;Id=$id}
     $value | Add-Member ScriptMethod EnableSharing {param($role);$script:Calls+=($this.Id+':'+$role);$this.SharingEnabled=$true;$this.SharingConnectionType=$role}
+    $value | Add-Member ScriptMethod DisableSharing {$script:Calls+=($this.Id+':off');$this.SharingEnabled=$false}
     return $value
 }
 $source=New-Configuration $true 0 $upstream
@@ -47,4 +48,23 @@ Check ($rejected -and !$script:Calls.Count) 'Accepted wrong USB identity'
 $script:WrongIdentity=$false;$source.SharingEnabled=$false;$target.SharingEnabled=$false
 Restore-UsbSharing $profile $adapter | Out-Null
 Check (($script:Calls -join ',') -eq ($upstream+':0,'+$private+':1')) 'Did not restore exactly the saved pair'
-'PASS: healthy sharing unchanged, saved pair restored, other private adapter and wrong USB identity refused'
+$script:Calls=@()
+$result=Restore-UsbSharing $profile $adapter -Rebind
+Check (($script:Calls -join ',') -eq ($private+':off,'+$upstream+':off,'+$upstream+':0,'+$private+':1')) 'Explicit rebind did not rebuild exactly the saved pair in order'
+Check ($result.Rebound -and $result.PublicEnabled -and $result.PrivateEnabled) 'Rebind status incorrect'
+$script:Calls=@();$production.SharingEnabled=$true
+$rejected=$false;try{Restore-UsbSharing $profile $adapter -Rebind | Out-Null}catch{$rejected=$true}
+Check ($rejected -and !$script:Calls.Count) 'Rebind touched another private adapter'
+$production.SharingEnabled=$false;$script:WrongIdentity=$true
+$rejected=$false;try{Restore-UsbSharing $profile $adapter -Rebind | Out-Null}catch{$rejected=$true}
+Check ($rejected -and !$script:Calls.Count) 'Rebind accepted the wrong USB identity'
+$script:WrongIdentity=$false
+$production.SharingEnabled=$true;$production.SharingConnectionType=0
+$rejected=$false;try{Restore-UsbSharing $profile $adapter -Rebind | Out-Null}catch{$rejected=$true}
+Check ($rejected -and !$script:Calls.Count) 'Rebind redirected a different public adapter'
+$production.SharingEnabled=$false;$production.SharingConnectionType=1
+$target | Add-Member ScriptMethod DisableSharing {$script:Calls+=($this.Id+':off');$this.SharingEnabled=$false;throw 'Synthetic partial disable failure'} -Force
+$rejected=$false;try{Restore-UsbSharing $profile $adapter -Rebind | Out-Null}catch{$rejected=$true}
+Check ($rejected -and $source.SharingEnabled -and $target.SharingEnabled) 'Partial rebind failure did not restore the saved roles'
+Check (($script:Calls -join ',') -eq ($private+':off,'+$private+':1')) 'Failure recovery changed an unrelated role'
+'PASS: healthy sharing unchanged, guarded explicit rebind, partial-failure recovery, other adapter and wrong identity refused'
