@@ -26,6 +26,7 @@
 #include <linux/hidraw.h>
 #include "Globals.h"
 #include "ReportFilter.h"
+#include "ReportFilterAccess.h"
 #include "A1644.h"
 #include "A1314.h"
 #include "HttpApiServer.h"
@@ -48,6 +49,7 @@ static int ForwardingLoop(IReportFilter** prps,int hidRawFd,int hidgFd,KeyboardP
 HttpApiServer g_ApiServer;
 volatile sig_atomic_t g_ExitRequested = 0;
 IReportFilter* g_pReportFilters[3] = { nullptr };
+std::mutex g_reportFilterMutex;
 
 int main(int argc, char** argv)
 {	
@@ -176,6 +178,8 @@ void OpenDevicesLoop()
 		std::transform(devId.begin(), devId.end(), devId.begin(), ::toupper);
 		InfoMsg("Device unique identifier: %s, VID: %x, PID: %x", devId.c_str(), fds.vid, fds.pid);
 
+		// Serialize filter lifetime with web settings access, never with input forwarding.
+		std::unique_lock<std::mutex> filtersLock(g_reportFilterMutex);
 		// Create the correct keyboard device IReportFilter
 		if((fds.vid == 0x5ac && fds.pid == 0x267) || (fds.vid == 0x4c && fds.pid == 0x267)) // These specifically match the A1644
 		{
@@ -228,6 +232,7 @@ void OpenDevicesLoop()
 			}
 		}		
 
+		filtersLock.unlock();
 		// Start forwarding loop with the established devices
 #ifdef RASPIKEY_MODERN_RUNTIME
         {
@@ -256,8 +261,12 @@ void OpenDevicesLoop()
 		close(fds.hidgFd);
 
 		// Delete all previously created IReportFilter instances
-		for (int k = 0; g_pReportFilters[k] != nullptr; k++)
+		filtersLock.lock();
+		for (int k = 0; g_pReportFilters[k] != nullptr; k++) {
 			delete g_pReportFilters[k];
+			g_pReportFilters[k] = nullptr;
+		}
+		filtersLock.unlock();
 
 		sleep(1);
 	}
@@ -551,7 +560,7 @@ void DeleteKeyMap(const std::string& devId)
 	const string path = GetKeymapFilePath(devId);
 
 	Globals::DeleteFile(path);
-	g_pReportFilters[1]->SetSettings("");	
+	WriteFilterSettings(g_reportFilterMutex, g_pReportFilters[1], "");
 }
 
 bool HasKeyMap(const std::string& devId)
@@ -563,7 +572,7 @@ bool HasKeyMap(const std::string& devId)
 
 string GetKeyMap(const std::string& devId)
 {
-	return g_pReportFilters[1]->GetSettings();
+	return ReadFilterSettings(g_reportFilterMutex, g_pReportFilters[1]);
 }
 
 void SetKeyMap(const std::string& devId, const std::string& json)
@@ -571,7 +580,7 @@ void SetKeyMap(const std::string& devId, const std::string& json)
 	// Will fail if the data is invalid
 	try
 	{
-		g_pReportFilters[1]->SetSettings(json);
+		WriteFilterSettings(g_reportFilterMutex, g_pReportFilters[1], json);
 	}
 	catch (const exception& m)
 	{
@@ -587,7 +596,7 @@ void SetKeyMap(const std::string& devId, const std::string& json)
 
 std::string GetSettings(const std::string& devId)
 {
-	return g_pReportFilters[0]->GetSettings();
+	return ReadFilterSettings(g_reportFilterMutex, g_pReportFilters[0]);
 }
 
 void SetSettings(const std::string& devId, const std::string& json)
@@ -595,7 +604,7 @@ void SetSettings(const std::string& devId, const std::string& json)
 	// Will fail if the data is invalid
 	try
 	{
-		g_pReportFilters[0]->SetSettings(json);
+		WriteFilterSettings(g_reportFilterMutex, g_pReportFilters[0], json);
 	}
 	catch (const exception& m)
 	{

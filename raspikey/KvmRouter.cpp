@@ -60,7 +60,7 @@ void Switch(bool target,bool explicitSwitch=false){
     input.Switched();
     if(target&&(!enabled||!ready)){
         if(enabled&&!hostAddress.empty()&&RequestKvmBluetoothConnection()){
-            connecting=true;connectDeadline=Clock::now()+std::chrono::seconds(15);error="Connecting to Bluetooth host. Input remains on USB.";
+            connecting=true;connectDeadline=Clock::now()+std::chrono::seconds(60);error="Connecting to Bluetooth host. Input remains on USB.";
         }else error="Bluetooth host is not ready. Input remains on USB.";
         return;
     }
@@ -129,7 +129,7 @@ std::string UpdateKvm(const std::string& body){
     {std::lock_guard<std::mutex> lock(mutex);
     if(action=="settings"){bool e,r;uint8_t m,k;Validate(request.at("settings"),e,m,k,r);auto oldEnabled=enabled,oldReverse=reverseBluetoothScroll;auto oldModifiers=modifiers,oldKey=key;enabled=e;modifiers=m;key=k;reverseBluetoothScroll=r;try{Save();}catch(...){enabled=oldEnabled;modifiers=oldModifiers;key=oldKey;reverseBluetoothScroll=oldReverse;throw;}if(!enabled){pairing={};Switch(false);}error.clear();}
     else if(action=="switch"){auto target=request.at("host").get<std::string>();if(target!="usb"&&target!="bluetooth")throw std::invalid_argument("Choose USB or Bluetooth.");Switch(target=="bluetooth",true);}
-    else if(action=="pair"){if(!enabled)throw std::invalid_argument("Enable Bluetooth output first.");if(!hostAddress.empty())throw std::invalid_argument("Forget the existing output host before pairing another.");pendingAddress.clear();pairing=Clock::now()+std::chrono::seconds(120);error.clear();}
+    else if(action=="pair"){if(!enabled)throw std::invalid_argument("Enable Bluetooth output first.");if(!hostAddress.empty())throw std::invalid_argument("Forget the existing output host before pairing another.");pendingAddress=Address(request.value("address",std::string()));pairing=Clock::now()+std::chrono::seconds(120);error.clear();}
     else if(action=="forget"){Switch(false);auto previous=hostAddress;hostAddress.clear();try{Save();}catch(...){hostAddress=previous;throw;}if(!previous.empty())ForgetKvmBluetoothHost(previous.c_str());pendingAddress.clear();hostName.clear();ready=false;pairing={};}
     else throw std::invalid_argument("Unknown host action.");}
     }catch(const nlohmann::json::exception&){throw std::invalid_argument("Invalid host settings.");}

@@ -125,7 +125,8 @@ install_framework() {
         echo 'USB descriptor update staged. Reboot the development Pi after setup.'
     fi
     for name in assert-dev.sh enable-bluetooth.sh release-keys.py rollback-dev.sh install-dev.sh \
-                apply-runtime.sh unpack-upload.py deploy-control.sh configure-deploy.sh usb-gadget.sh; do
+                apply-runtime.sh unpack-upload.py deploy-control.sh configure-deploy.sh usb-gadget.sh \
+                configure-usb-management.sh configure-usb-management.py enable-usb-management.sh; do
         install -m 755 "$tools/$name" "/usr/local/libexec/raspikey/.$name.next"
         mv -Tf "/usr/local/libexec/raspikey/.$name.next" "/usr/local/libexec/raspikey/$name"
     done

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mutex>
+#include <cstdint>
 #include "agent.h"
 #include <unistd.h>
 #include "bt.h"
@@ -23,6 +24,9 @@ using namespace std;
 namespace bluetooth
 {
 	gboolean g_AgentRegistered = FALSE;
+	bool g_AgentRegisterPending = false;
+	uint64_t g_AgentGeneration = 0;
+	struct AgentRegistration { DBusConnection* connection; uint64_t generation; };
 	DBusMessage* g_PendingMessage = nullptr;
 	
 	const GDBusMethodTable g_AgentMethods[] =
@@ -139,7 +143,10 @@ namespace bluetooth
 
 	void RegisterAgentReply(DBusMessage* message, void* userdata)
 	{
-		DBusConnection *conn = (DBusConnection *)userdata;
+		auto* registration = static_cast<AgentRegistration*>(userdata);
+		if (registration->generation != g_AgentGeneration) return;
+		DBusConnection *conn = registration->connection;
+		g_AgentRegisterPending = false;
 		DBusError error;
 
 		dbus_error_init(&error);
@@ -161,11 +168,7 @@ namespace bluetooth
 
 	void AgentRegister(DBusConnection* conn, GDBusProxy* manager)
 	{
-		if (g_AgentRegistered == TRUE)
-		{
-			ErrorMsg("Agent is already registered");
-			return;
-		}
+		if (g_AgentRegistered == TRUE || g_AgentRegisterPending) return;
 
 		if (g_dbus_register_interface(conn, AGENT_PATH, AGENT_INTERFACE, g_AgentMethods, nullptr, nullptr, nullptr, nullptr) == FALSE)
 		{
@@ -173,16 +176,34 @@ namespace bluetooth
 			return;
 		}
 
+		auto* registration = g_new0(AgentRegistration, 1);
+		registration->connection = conn;
+		registration->generation = g_AgentGeneration;
+		g_AgentRegisterPending = true;
 		if (g_dbus_proxy_method_call(
 			manager, 
 			"RegisterAgent",
 			RegisterAgentSetup,
 			RegisterAgentReply,
-			conn, nullptr) == FALSE)
+			registration, g_free) == FALSE)
 		{
+			g_AgentRegisterPending = false;
+			g_free(registration);
+			g_dbus_unregister_interface(conn, AGENT_PATH, AGENT_INTERFACE);
 			ErrorMsg("Failed to call register agent method");
 			return;
 		}
+	}
+
+	void AgentServiceLost(DBusConnection* conn)
+	{
+		// Exporting the object locally does not retain its BlueZ registration.
+		// A late reply from the previous daemon must not register this generation.
+		++g_AgentGeneration;
+		g_AgentRegistered = FALSE;
+		g_AgentRegisterPending = false;
+		if (g_PendingMessage) { dbus_message_unref(g_PendingMessage); g_PendingMessage = nullptr; }
+		g_dbus_unregister_interface(conn, AGENT_PATH, AGENT_INTERFACE);
 	}
 
 	void UnregisterAgentSetup(DBusMessageIter* iter, void* userdata)

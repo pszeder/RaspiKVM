@@ -262,7 +262,7 @@ void HttpApiServer::BuildRoutes()
 			jobj["connected"] = dev.Connected;
 			jobj["trusted"] = dev.Trusted;
 
-			if (dev.Connected && dev.Icon != "input-mouse")
+			if (dev.Connected && dev.Icon == "input-keyboard")
 			{
 				int bcap = 0;
 				if (Globals::GetBtHidBatteryCapacity(dev.Address, bcap))
